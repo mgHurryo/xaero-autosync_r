@@ -49,6 +49,9 @@ public final class SharedMapClient {
 	private static boolean previousWaypointsEnabled;
 	private static String previousDimension;
 	private static String syncingDimension;
+	private static long syncingRootHash;
+	private static long lastMapProgressMillis;
+	private static long retryMapSyncAtMillis;
 
 	private SharedMapClient() {
 	}
@@ -66,6 +69,7 @@ public final class SharedMapClient {
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			SharedMapNetworking.tickClientTransfers();
 			handleConfigChanges();
+			handleSyncWatchdog();
 			if (++persistenceTicks >= 200) {
 				persistenceTicks = 0;
 				TILE_DATA.saveIfDirty();
@@ -130,14 +134,15 @@ public final class SharedMapClient {
 			resetMapQueues();
 			return;
 		}
-		mapAdapter.apply(payload.tile());
-		if (!mapAdapter.isAvailable()) {
+		if (!mapAdapter.apply(payload.tile())) {
 			resetMapQueues();
+			if (mapAdapter.isAvailable()) retryMapSyncAtMillis = System.currentTimeMillis() + 2_000L;
 			return;
 		}
 		TILE_DATA.put(payload.tile(), payload.revision());
 		QUEUED_TILES.remove(tileKey(payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ()));
 		tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
+		lastMapProgressMillis = System.currentTimeMillis();
 		pumpTileRequests();
 		XaeroMapsync_r.LOGGER.debug("Received tile data {} {} {} revision={}",
 				payload.tile().dimension(),
@@ -149,9 +154,17 @@ public final class SharedMapClient {
 	public static void handleMapNodeResponse(MapNodeResponsePayload payload) {
 		if (!SharedMapClientConfig.get().mapSyncEnabled()) return;
 		if (!payload.dimension().equals(currentDimension())) return;
-		syncingDimension = payload.dimension();
+		if (syncingDimension == null) {
+			syncingDimension = payload.dimension();
+			syncingRootHash = payload.rootHash();
+		} else if (!syncingDimension.equals(payload.dimension()) || syncingRootHash != payload.rootHash()) {
+			resetMapQueues();
+			retryMapSyncAtMillis = System.currentTimeMillis() + 250L;
+			return;
+		}
+		lastMapProgressMillis = System.currentTimeMillis();
 		if (mapNodeRequestsInFlight > 0) mapNodeRequestsInFlight--;
-		MAP_TILES.setRootHash(payload.rootHash());
+		MAP_TILES.setRootHash(syncingRootHash);
 		Map<String, MapTileIndexEntry> leafEntries = payload.entries().stream().collect(Collectors.toMap(
 				entry -> tileKey(entry.dimension(), entry.chunkX(), entry.chunkZ()), Function.identity(), (left, right) -> right));
 		List<MerkleNodeAddress> changedBranches = new ArrayList<>();
@@ -195,6 +208,7 @@ public final class SharedMapClient {
 		while (tileRequestsInFlight < limit && !TILE_REQUEST_QUEUE.isEmpty()) {
 			SharedMapNetworking.requestTile(TILE_REQUEST_QUEUE.remove());
 			tileRequestsInFlight++;
+			lastMapProgressMillis = System.currentTimeMillis();
 		}
 		markRootCompleteIfIdle();
 	}
@@ -205,6 +219,7 @@ public final class SharedMapClient {
 			while (batch.size() < 64 && !MAP_NODE_QUEUE.isEmpty()) batch.add(MAP_NODE_QUEUE.remove());
 			SharedMapNetworking.requestMapNodes(batch);
 			mapNodeRequestsInFlight++;
+			lastMapProgressMillis = System.currentTimeMillis();
 		}
 	}
 
@@ -251,6 +266,20 @@ public final class SharedMapClient {
 				waypointAdapter.reconcile(java.util.List.of());
 			}
 		}
+	}
+
+	private static void handleSyncWatchdog() {
+		long now = System.currentTimeMillis();
+		boolean waiting = tileRequestsInFlight > 0 || mapNodeRequestsInFlight > 0;
+		if (waiting && now - lastMapProgressMillis >= 30_000L) {
+			resetMapQueues();
+			retryMapSyncAtMillis = now + 250L;
+		}
+		if (retryMapSyncAtMillis != 0L && now >= retryMapSyncAtMillis && connectedToSharedMapServer && mapSyncAvailable()) {
+			retryMapSyncAtMillis = 0L;
+			SharedMapNetworking.requestMapSync();
+		}
+		if (persistenceTicks % 100 == 0 && previousWaypointsEnabled) reconcileWaypoints();
 	}
 
 	public static int waypointCount() { return WAYPOINTS.activeCount(); }
@@ -312,8 +341,10 @@ public final class SharedMapClient {
 		TILE_REQUEST_QUEUE.clear();
 		MAP_NODE_QUEUE.clear();
 		QUEUED_TILES.clear();
+		MERKLE.replace(java.util.List.of());
 		tileRequestsInFlight = 0;
 		mapNodeRequestsInFlight = 0;
 		syncingDimension = null;
+		syncingRootHash = 0L;
 	}
 }

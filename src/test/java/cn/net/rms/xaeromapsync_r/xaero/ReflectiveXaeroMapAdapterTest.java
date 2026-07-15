@@ -71,6 +71,16 @@ final class ReflectiveXaeroMapAdapterTest {
 		assertFalse(adapter.isAvailable());
 	}
 
+	@Test
+	void notReadyRuntimeRemainsAvailableForRetry() {
+		ReflectiveXaeroMapAdapter adapter = new ReflectiveXaeroMapAdapter(tile -> {
+			throw new IllegalStateException("Xaero WorldMapSession is not initialized");
+		});
+
+		assertFalse(adapter.apply(tile(256)));
+		assertTrue(adapter.isAvailable());
+	}
+
 	private static MapTile tile(int size) {
 		return new MapTile("minecraft:overworld", -1, -5, new int[size], new int[size], new int[size], new int[size], 1L);
 	}

@@ -281,14 +281,14 @@ public final class SharedMapNetworking {
 			byte[] envelope = new byte[buffer.readableBytes() + 1];
 			envelope[0] = TRANSFER_TYPE_MAP_NODE_RESPONSE;
 			buffer.readBytes(envelope, 1, buffer.readableBytes());
-			SharedMapServer.transfers().start(player, envelope);
+			startTransfer(player, envelope);
 			return;
 		}
 		if (!SharedMapServer.networkBudget().trySpend(player.getUUID(), buffer.readableBytes())) {
 			byte[] envelope = new byte[buffer.readableBytes() + 1];
 			envelope[0] = TRANSFER_TYPE_MAP_NODE_RESPONSE;
 			buffer.readBytes(envelope, 1, buffer.readableBytes());
-			SharedMapServer.transfers().start(player, envelope);
+			startTransfer(player, envelope);
 			return;
 		}
 		ServerPlayNetworking.send(player, S2C_MAP_NODE_RESPONSE, buffer);
@@ -322,7 +322,7 @@ public final class SharedMapNetworking {
 			byte[] envelope = new byte[buffer.readableBytes() + 1];
 			envelope[0] = TRANSFER_TYPE_TILE_DATA;
 			buffer.readBytes(envelope, 1, buffer.readableBytes());
-			SharedMapServer.transfers().start(player, envelope);
+			startTransfer(player, envelope);
 			return;
 		}
 		ServerPlayNetworking.send(player, S2C_TILE_DATA, buffer);
@@ -331,6 +331,9 @@ public final class SharedMapNetworking {
 	private static void handleWaypointCreate(net.minecraft.server.level.ServerPlayer player, WaypointCreatePayload payload) {
 		try {
 			PublicWaypoint submitted = payload.waypoint();
+			if (SharedMapServer.waypoints().find(submitted.id()).isPresent()) {
+				throw new IllegalArgumentException("Waypoint id already exists");
+			}
 			SharedMapServer.permissions().validateCreate(player, submitted);
 			long now = System.currentTimeMillis();
 			PublicWaypoint waypoint = new PublicWaypoint(
@@ -351,6 +354,7 @@ public final class SharedMapNetworking {
 					0L,
 					0L);
 			PublicWaypoint stored = SharedMapServer.waypoints().upsert(waypoint, now);
+			XaeroMapsync_r.LOGGER.info("Public waypoint created id={} actor={} revision={}", stored.id(), player.getUUID(), stored.revision());
 			broadcastWaypoint(player.getServer(), S2C_WAYPOINT_UPSERT, stored);
 		} catch (RuntimeException exception) {
 			sendWaypointError(player, exception.getMessage());
@@ -370,6 +374,7 @@ public final class SharedMapNetworking {
 				throw new IllegalArgumentException("Waypoint permission denied");
 			}
 			PublicWaypoint submitted = payload.waypoint();
+			SharedMapServer.permissions().validateUpdate(submitted);
 			PublicWaypoint waypoint = new PublicWaypoint(
 					submitted.id(),
 					current.get().creatorId(),
@@ -388,6 +393,7 @@ public final class SharedMapNetworking {
 					current.get().createdAtMillis(),
 					current.get().updatedAtMillis());
 			PublicWaypoint stored = SharedMapServer.waypoints().upsert(waypoint, System.currentTimeMillis());
+			XaeroMapsync_r.LOGGER.info("Public waypoint updated id={} actor={} revision={}", stored.id(), player.getUUID(), stored.revision());
 			broadcastWaypoint(player.getServer(), S2C_WAYPOINT_UPSERT, stored);
 		} catch (RuntimeException exception) {
 			sendWaypointError(player, exception.getMessage());
@@ -408,6 +414,7 @@ public final class SharedMapNetworking {
 			}
 			PublicWaypoint tombstone = SharedMapServer.waypoints().delete(payload.waypointId(), System.currentTimeMillis());
 			if (tombstone != null) {
+				XaeroMapsync_r.LOGGER.info("Public waypoint deleted id={} actor={} revision={}", tombstone.id(), player.getUUID(), tombstone.revision());
 				broadcastWaypoint(player.getServer(), S2C_WAYPOINT_DELETE, tombstone);
 			}
 		} catch (RuntimeException exception) {
@@ -443,6 +450,15 @@ public final class SharedMapNetworking {
 			return;
 		}
 		action.run();
+	}
+
+	private static void startTransfer(net.minecraft.server.level.ServerPlayer player, byte[] envelope) {
+		try {
+			SharedMapServer.transfers().start(player, envelope);
+		} catch (IllegalStateException exception) {
+			XaeroMapsync_r.LOGGER.warn("Rejected excess fragmented transfer for {}", player.getGameProfile().getName());
+			sendWaypointError(player, "Too many active map transfers");
+		}
 	}
 
 	@Environment(EnvType.CLIENT)

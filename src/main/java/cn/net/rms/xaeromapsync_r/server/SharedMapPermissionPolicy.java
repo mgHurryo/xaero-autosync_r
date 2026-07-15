@@ -25,4 +25,10 @@ public final class SharedMapPermissionPolicy {
 	public boolean canMutate(ServerPlayer player, PublicWaypoint waypoint) {
 		return player.hasPermissions(2) || player.getUUID().equals(waypoint.creatorId());
 	}
+
+	public void validateUpdate(PublicWaypoint submitted) {
+		if (submitted.visibility() != WaypointVisibility.PUBLIC) {
+			throw new IllegalArgumentException("Only public waypoints are supported");
+		}
+	}
 }

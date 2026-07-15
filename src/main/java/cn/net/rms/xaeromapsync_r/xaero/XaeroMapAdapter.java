@@ -5,5 +5,5 @@ import cn.net.rms.xaeromapsync_r.map.MapTile;
 public interface XaeroMapAdapter {
 	boolean isAvailable();
 
-	void apply(MapTile tile);
+	boolean apply(MapTile tile);
 }

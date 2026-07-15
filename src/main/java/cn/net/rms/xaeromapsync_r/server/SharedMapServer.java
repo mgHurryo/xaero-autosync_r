@@ -41,6 +41,7 @@ public final class SharedMapServer {
 	private static final Set<RegionKey> KNOWN_REGIONS = new LinkedHashSet<>();
 	private static final ServerTransferManager TRANSFERS = new ServerTransferManager(NETWORK_BUDGET,
 			cn.net.rms.xaeromapsync_r.network.SharedMapNetworking::sendTransferPart);
+	private static int persistenceTicks;
 
 	private SharedMapServer() {
 	}
@@ -50,7 +51,14 @@ public final class SharedMapServer {
 		ExplorationTracker.register();
 		MAP_TASKS.register();
 		TRANSFERS.register();
-		ServerTickEvents.END_SERVER_TICK.register(server -> flushRegionActivity());
+		ServerTickEvents.END_SERVER_TICK.register(server -> {
+			flushRegionActivity();
+			if (++persistenceTicks >= 1_200) {
+				persistenceTicks = 0;
+				WAYPOINTS.save(server);
+				DIRTY_CHUNKS.save(server);
+			}
+		});
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
 			TILE_DATA.start(server);
 			WAYPOINTS.load(server);

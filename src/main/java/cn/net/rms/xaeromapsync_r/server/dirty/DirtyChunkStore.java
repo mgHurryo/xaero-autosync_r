@@ -69,7 +69,7 @@ public final class DirtyChunkStore {
 				}
 				DirtyChunkRecord record = new DirtyChunkRecord(recordFile.dimension, recordFile.chunkX, recordFile.chunkZ, currentTick);
 				DirtyActivityState state = recordFile.state == null ? DirtyActivityState.ACTIVE : recordFile.state;
-				record.restore(state, recordFile.firstDirtyTick, recordFile.lastDirtyTick, recordFile.dirtyColumns);
+				record.restore(state, currentTick, currentTick, recordFile.dirtyColumns);
 				String key = key(recordFile.dimension, recordFile.chunkX, recordFile.chunkZ);
 				records.put(key, record);
 				generations.put(key, 0L);

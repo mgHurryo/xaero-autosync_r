@@ -10,7 +10,7 @@ import java.util.function.Consumer;
 import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 
 public final class ClientTransferManager {
-	private static final int MAX_ACTIVE_TRANSFERS = 4;
+	private static final int MAX_ACTIVE_TRANSFERS = 24;
 	private final Map<UUID, TransferAssembler> assemblers = new LinkedHashMap<>();
 	private final Consumer<TransferAckPayload> acknowledgementSender;
 	private final Consumer<byte[]> completionHandler;
@@ -38,8 +38,8 @@ public final class ClientTransferManager {
 			XaeroMapsync_r.LOGGER.warn("Rejected invalid fragmented transfer {}", part.transferId(), exception);
 			return;
 		}
-		acknowledgementSender.accept(assembler.acknowledgement());
 		if (result == TransferAssembler.ReceiveResult.COMPLETE) {
+			acknowledgementSender.accept(assembler.acknowledgement());
 			byte[] data = assembler.assembledData();
 			assemblers.remove(part.transferId());
 			try {
@@ -49,6 +49,8 @@ public final class ClientTransferManager {
 			}
 		} else if (result == TransferAssembler.ReceiveResult.CORRUPT) {
 			assemblers.remove(part.transferId());
+		} else {
+			acknowledgementSender.accept(assembler.acknowledgement());
 		}
 	}
 

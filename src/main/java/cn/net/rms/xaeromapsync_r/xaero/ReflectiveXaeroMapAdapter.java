@@ -59,17 +59,28 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 	}
 
 	@Override
-	public void apply(MapTile tile) {
+	public boolean apply(MapTile tile) {
 		if (!available) {
-			return;
+			return false;
 		}
 		try {
 			validateTile(tile);
 			runtime.apply(tile);
+			return true;
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
+			if (isNotReady(exception)) {
+				XaeroMapsync_r.LOGGER.debug("Xaero map runtime is not ready; tile injection will be retried");
+				return false;
+			}
 			available = false;
 			XaeroMapsync_r.LOGGER.error("Xaero map tile injection failed; adapter disabled for this session", exception);
+			return false;
 		}
+	}
+
+	private static boolean isNotReady(Throwable exception) {
+		return exception instanceof IllegalStateException && exception.getMessage() != null
+				&& (exception.getMessage().contains("not initialized") || exception.getMessage().contains("not loaded yet"));
 	}
 
 	static boolean supportsVersion(String version) {

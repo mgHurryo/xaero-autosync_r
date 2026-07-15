@@ -105,11 +105,21 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 			return XaeroWaypointReconcileResult.completed(created, updated, deleted, ignored, changed);
 		} catch (RuntimeException | ReflectiveOperationException | LinkageError exception) {
 			rollback(target, originalOrder, originalValues);
+			if (isNotReady(exception)) {
+				String message = "Xaero waypoint runtime is not ready; reconciliation will be retried";
+				XaeroMapsync_r.LOGGER.debug(message);
+				return XaeroWaypointReconcileResult.failed(ignored, message);
+			}
 			available = false;
 			String message = "Xaero waypoint reconciliation failed; adapter disabled for this session";
 			XaeroMapsync_r.LOGGER.error(message, exception);
 			return XaeroWaypointReconcileResult.failed(ignored, message + ": " + exception.getMessage());
 		}
+	}
+
+	private static boolean isNotReady(Throwable exception) {
+		return exception instanceof IllegalStateException && exception.getMessage() != null
+				&& exception.getMessage().contains("not initialized");
 	}
 
 	private void rollback(XaeroWaypointBridge.Target target, List<Object> originalOrder, Map<Object, WaypointValues> originalValues) {

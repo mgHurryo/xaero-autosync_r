@@ -16,7 +16,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 
 public final class ServerTransferManager {
-	private static final int MAX_TRANSFERS_PER_PLAYER = 4;
+	private static final int MAX_TRANSFERS_PER_PLAYER = 24;
 	private static final long RETRY_TIMEOUT_MILLIS = 5_000L;
 	private final NetworkBudgetTracker budget;
 	private final BiConsumer<ServerPlayer, TransferPartPayload> sender;
@@ -33,11 +33,7 @@ public final class ServerTransferManager {
 
 	public synchronized UUID start(ServerPlayer player, byte[] data) {
 		LinkedHashMap<UUID, PendingTransfer> playerTransfers = transfers.computeIfAbsent(player.getUUID(), ignored -> new LinkedHashMap<>());
-		while (playerTransfers.size() >= MAX_TRANSFERS_PER_PLAYER) {
-			Iterator<UUID> iterator = playerTransfers.keySet().iterator();
-			iterator.next();
-			iterator.remove();
-		}
+		if (playerTransfers.size() >= MAX_TRANSFERS_PER_PLAYER) throw new IllegalStateException("Too many active transfers");
 		UUID transferId = UUID.randomUUID();
 		List<TransferPartPayload> parts = TransferFragmenter.fragment(transferId, data);
 		TransferSession session = new TransferSession(parts, RETRY_TIMEOUT_MILLIS, 8);

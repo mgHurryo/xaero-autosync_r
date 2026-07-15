@@ -28,6 +28,61 @@ dependencies {
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
 }
 
+loom {
+	runs {
+		client {
+			client()
+			name = "Shared Map Client A"
+			runDir = "run/client-a"
+			programArg "--username"
+			programArg "MapSyncA"
+		}
+		clientB {
+			client()
+			name = "Shared Map Client B"
+			runDir = "run/client-b"
+			programArg "--username"
+			programArg "MapSyncB"
+		}
+		server {
+			server()
+			name = "Shared Map Server"
+			runDir = "run/server"
+			programArg "nogui"
+		}
+	}
+}
+
+tasks.register("prepareXaeroTestMods", Sync) {
+	group = "fabric"
+	description = "Copies the pinned local Xaero reference jars into both isolated client run directories."
+	def referenceDir = layout.projectDirectory.dir("xaeromap-origin")
+	from(referenceDir) {
+		include "XaerosWorldMap_1.25.1_Fabric_1.17.1.jar"
+		include "Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar"
+	}
+	into(layout.buildDirectory.dir("prepared-xaero-mods"))
+	doFirst {
+		def expected = [
+			"XaerosWorldMap_1.25.1_Fabric_1.17.1.jar",
+			"Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar"
+		]
+		expected.each { name ->
+			if (!referenceDir.file(name).asFile.isFile()) {
+				throw new GradleException("Missing pinned Xaero test jar: xaeromap-origin/${name}")
+			}
+		}
+	}
+	doLast {
+		["run/client-a/mods", "run/client-b/mods"].each { target ->
+			copy {
+				from destinationDir
+				into layout.projectDirectory.dir(target)
+			}
+		}
+	}
+}
+
 test {
 	useJUnitPlatform()
 }

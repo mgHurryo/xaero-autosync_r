@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenMouseEvents;
 import net.fabricmc.fabric.api.client.screen.v1.Screens;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
@@ -20,7 +21,10 @@ public final class XaeroWaypointScreenIntegration {
 	private static final int BUTTON_HEIGHT = 20;
 	private static final int BOTTOM_BAR_CLEARANCE = 78;
 	private static final int HORIZONTAL_MARGIN = 6;
-	private static final int MAX_ROW_WIDTH = 308;
+	private static final int MAX_ROW_WIDTH = 520;
+	private static final int BUTTON_GAP = 4;
+	private static final int BUTTON_HORIZONTAL_PADDING = 20;
+	private static final int MIN_BUTTON_WIDTH = 72;
 	private static final List<String> LOCKED_XAERO_BUTTON_FIELDS = List.of(
 			"deleteButton", "editButton", "disableEnableButton", "clearButton", "shareButton");
 
@@ -32,12 +36,11 @@ public final class XaeroWaypointScreenIntegration {
 			if (!XAERO_WAYPOINT_SCREEN_CLASS.equals(screen.getClass().getName())) {
 				return;
 			}
-			addWaypointActions(client, screen, scaledWidth, scaledHeight);
+			addWaypointActions(client, screen);
 		});
 	}
 
-	private static void addWaypointActions(net.minecraft.client.Minecraft client, Screen screen, int screenWidth,
-			int screenHeight) {
+	private static void addWaypointActions(net.minecraft.client.Minecraft client, Screen screen) {
 		List<Button> actions = new ArrayList<>();
 		Button status = actionButton(0, 0, 1, "screen.xaero-mapsync_r.share.status.not_shared", button -> {});
 		status.active = false;
@@ -54,27 +57,26 @@ public final class XaeroWaypointScreenIntegration {
 		actions.add(unshareButton);
 		List<LockableButton> lockedXaeroButtons = lockedXaeroButtons(screen);
 
-		int availableWidth = Math.max(3, screenWidth - HORIZONTAL_MARGIN * 2);
-		int rowWidth = Math.min(Math.max(MAX_ROW_WIDTH, actions.size() * 96), availableWidth);
-		int gap = rowWidth >= 152 ? 4 : 2;
-		int buttonWidth = Math.max(1, (rowWidth - gap * (actions.size() - 1)) / actions.size());
-		int usedWidth = buttonWidth * actions.size() + gap * (actions.size() - 1);
-		int left = (screenWidth - usedWidth) / 2;
-		int top = Math.max(4, screenHeight - BOTTOM_BAR_CLEARANCE);
-
-		for (int index = 0; index < actions.size(); index++) {
-			Button button = actions.get(index);
-			button.x = left + index * (buttonWidth + gap);
-			button.y = top;
-			button.setWidth(buttonWidth);
+		for (Button button : actions) {
 			Screens.getButtons(screen).add(button);
 		}
+		ScreenMouseEvents.allowMouseClick(screen).register((clickedScreen, mouseX, mouseY, mouseButton) -> {
+			for (Button button : actions) {
+				if (button.visible && button.isMouseOver(mouseX, mouseY)) {
+					button.mouseClicked(mouseX, mouseY, mouseButton);
+					return false;
+				}
+			}
+			return true;
+		});
+		layoutActions(client, screen, actions);
 		ScreenEvents.afterRender(screen).register((renderedScreen, matrices, mouseX, mouseY, tickDelta) ->
-				updateStatus(status, publicButton, teamButton, unshareButton, lockedXaeroButtons, renderedScreen));
+				updateStatus(actions, status, publicButton, teamButton, unshareButton, lockedXaeroButtons,
+						renderedScreen));
 	}
 
-	private static void updateStatus(Button status, Button publicButton, Button teamButton, Button unshareButton,
-			List<LockableButton> lockedXaeroButtons, Screen screen) {
+	private static void updateStatus(List<Button> actions, Button status, Button publicButton, Button teamButton,
+			Button unshareButton, List<LockableButton> lockedXaeroButtons, Screen screen) {
 		Optional<WaypointVisibility> visibility = SharedMapClient.selectedXaeroWaypointVisibility(screen);
 		boolean selected = visibility.isPresent();
 		boolean shared = visibility.filter(value -> value == WaypointVisibility.PUBLIC
@@ -95,6 +97,69 @@ public final class XaeroWaypointScreenIntegration {
 		for (LockableButton button : lockedXaeroButtons) {
 			button.setLocked(screen, shared);
 		}
+		layoutActions(net.minecraft.client.Minecraft.getInstance(), screen, actions);
+	}
+
+	private static void layoutActions(net.minecraft.client.Minecraft client, Screen screen, List<Button> actions) {
+		List<Button> visible = new ArrayList<>();
+		for (Button button : actions) {
+			if (button.visible) {
+				visible.add(button);
+			}
+		}
+		if (visible.isEmpty()) {
+			return;
+		}
+
+		int availableWidth = Math.max(1, screen.width - HORIZONTAL_MARGIN * 2);
+		int rowLimit = Math.min(MAX_ROW_WIDTH, availableWidth);
+		List<List<Button>> rows = new ArrayList<>();
+		List<Button> row = new ArrayList<>();
+		int rowWidth = 0;
+		for (Button button : visible) {
+			int preferred = preferredWidth(client, button, rowLimit);
+			int nextWidth = row.isEmpty() ? preferred : rowWidth + BUTTON_GAP + preferred;
+			if (!row.isEmpty() && nextWidth > rowLimit) {
+				rows.add(row);
+				row = new ArrayList<>();
+				rowWidth = 0;
+			}
+			row.add(button);
+			rowWidth = rowWidth == 0 ? preferred : rowWidth + BUTTON_GAP + preferred;
+		}
+		rows.add(row);
+
+		int bottom = Math.max(4, screen.height - BOTTOM_BAR_CLEARANCE);
+		for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+			List<Button> buttons = rows.get(rowIndex);
+			int[] widths = new int[buttons.size()];
+			int usedWidth = BUTTON_GAP * Math.max(0, buttons.size() - 1);
+			for (int index = 0; index < buttons.size(); index++) {
+				widths[index] = preferredWidth(client, buttons.get(index), rowLimit);
+				usedWidth += widths[index];
+			}
+			int remaining = Math.max(0, rowLimit - usedWidth);
+			for (int index = 0; index < widths.length; index++) {
+				int share = remaining / (widths.length - index);
+				widths[index] += share;
+				remaining -= share;
+				usedWidth += share;
+			}
+			int left = (screen.width - usedWidth) / 2;
+			int top = bottom - (rows.size() - rowIndex - 1) * (BUTTON_HEIGHT + BUTTON_GAP);
+			for (int index = 0; index < buttons.size(); index++) {
+				Button button = buttons.get(index);
+				button.x = left;
+				button.y = top;
+				button.setWidth(widths[index]);
+				left += widths[index] + BUTTON_GAP;
+			}
+		}
+	}
+
+	private static int preferredWidth(net.minecraft.client.Minecraft client, Button button, int rowLimit) {
+		return Math.min(rowLimit, Math.max(MIN_BUTTON_WIDTH,
+				client.font.width(button.getMessage()) + BUTTON_HORIZONTAL_PADDING));
 	}
 
 	private static List<LockableButton> lockedXaeroButtons(Screen screen) {

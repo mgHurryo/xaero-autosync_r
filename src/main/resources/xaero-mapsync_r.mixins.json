@@ -10,6 +10,9 @@
 		"PistonActivityMixin",
 		"PrimedTntActivityMixin"
 	],
+	"client": [
+		"XaeroWaypointListMixin"
+	],
 	"injectors": {
 		"defaultRequire": 1
 	},

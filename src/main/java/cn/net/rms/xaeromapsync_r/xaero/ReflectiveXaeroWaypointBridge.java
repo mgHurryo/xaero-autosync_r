@@ -6,6 +6,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.List;
+import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceKey;
 
 final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
@@ -118,6 +119,12 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 		}
 		Object manager = currentManager();
 		ResourceKey<?> dimension = (ResourceKey<?>) invoke(getDimensionKey, manager, invoke(getWorldId, world));
+		if (dimension == null && world == currentWorld()) {
+			Minecraft minecraft = Minecraft.getInstance();
+			if (minecraft.level != null) {
+				dimension = minecraft.level.dimension();
+			}
+		}
 		if (dimension == null) {
 			throw new IllegalArgumentException("The selected Xaero waypoint world is not a Minecraft dimension");
 		}

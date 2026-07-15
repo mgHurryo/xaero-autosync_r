@@ -14,7 +14,8 @@ final class XaeroWaypointIdentityTest {
 
 		assertEquals(id, XaeroWaypointIdentity.parse(managedName).orElseThrow());
 		assertEquals("Village: north", XaeroWaypointIdentity.displayName(managedName));
-		assertTrue(managedName.startsWith("\u26BF "));
+		assertTrue(managedName.startsWith("Village: north"));
+		assertTrue(!managedName.contains("\u26BF"));
 		assertTrue(!managedName.contains("[xms-"));
 		assertTrue(!managedName.contains("\uFE00"));
 	}

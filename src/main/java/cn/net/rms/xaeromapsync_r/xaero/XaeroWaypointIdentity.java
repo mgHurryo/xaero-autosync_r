@@ -5,8 +5,8 @@ import java.util.Base64;
 import java.util.Optional;
 import java.util.UUID;
 
-final class XaeroWaypointIdentity {
-	private static final String LOCK_PREFIX = "\u26BF ";
+public final class XaeroWaypointIdentity {
+	private static final String LEGACY_KEY_PREFIX = "\u26BF ";
 	private static final String LEGACY_LOCK_PREFIX = "\uD83D\uDD12 ";
 	private static final char FORMAT_CODE = '\u00A7';
 	private static final String FORMAT_RESET = "\u00A7r";
@@ -27,8 +27,8 @@ final class XaeroWaypointIdentity {
 
 	static String managedName(String displayName, UUID id) {
 		displayName = stripLock(displayName);
-		StringBuilder result = new StringBuilder(displayName.length() + LOCK_PREFIX.length() + FORMATTED_MARKER_LENGTH);
-		result.append(LOCK_PREFIX).append(displayName).append(FORMAT_RESET);
+		StringBuilder result = new StringBuilder(displayName.length() + FORMATTED_MARKER_LENGTH);
+		result.append(displayName).append(FORMAT_RESET);
 		for (byte value : bytes(id)) {
 			result.append(FORMAT_CODE).append(Character.forDigit((value >>> 4) & 0xF, 16));
 			result.append(FORMAT_CODE).append(Character.forDigit(value & 0xF, 16));
@@ -113,7 +113,7 @@ final class XaeroWaypointIdentity {
 		}
 	}
 
-	static boolean isManagedName(String name) {
+	public static boolean isManagedName(String name) {
 		if (parseFormatted(name).isPresent() || parseHidden(name).isPresent()) {
 			return true;
 		}
@@ -143,8 +143,8 @@ final class XaeroWaypointIdentity {
 		if (name == null) {
 			return null;
 		}
-		if (name.startsWith(LOCK_PREFIX)) {
-			return name.substring(LOCK_PREFIX.length());
+		if (name.startsWith(LEGACY_KEY_PREFIX)) {
+			return name.substring(LEGACY_KEY_PREFIX.length());
 		}
 		return name.startsWith(LEGACY_LOCK_PREFIX) ? name.substring(LEGACY_LOCK_PREFIX.length()) : name;
 	}

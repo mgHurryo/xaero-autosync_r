@@ -110,7 +110,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		assertEquals(WaypointVisibility.PRIVATE,
 				adapter.selectedVisibility(new Object(), List.of(), PLAYER_ID).orElseThrow());
 		assertEquals("Factory", XaeroWaypointIdentity.displayName(source.values.name));
-		assertFalse(source.values.name.startsWith("\u26BF "));
+		assertFalse(source.values.name.contains("\u26BF"));
 		assertTrue(XaeroWaypointIdentity.parse(source.values.name).isEmpty());
 		XaeroWaypointMutation retry = adapter.prepareShare(new Object(), WaypointVisibility.TEAM, List.of(), PLAYER_ID,
 				"Builder");

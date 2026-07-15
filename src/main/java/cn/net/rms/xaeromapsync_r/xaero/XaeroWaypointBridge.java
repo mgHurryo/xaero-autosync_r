@@ -1,8 +1,11 @@
 package cn.net.rms.xaeromapsync_r.xaero;
 
 import java.util.List;
+import java.util.Map;
 
 interface XaeroWaypointBridge {
+	String PUBLIC_WAYPOINT_SET = "gui.xaero-mapsync_r.public_waypoints";
+
 	Target currentTarget() throws ReflectiveOperationException;
 
 	SelectedWaypoint selectedWaypoint(Object screen) throws ReflectiveOperationException;
@@ -15,13 +18,17 @@ interface XaeroWaypointBridge {
 
 	void save(Object world) throws ReflectiveOperationException;
 
+	void removeSet(Object world, String setKey) throws ReflectiveOperationException;
+
 	final class Target {
 		private final Object world;
-		private final List<Object> waypoints;
+		private final Map<String, List<Object>> waypointSets;
+		private final boolean publicSetCreated;
 
-		Target(Object world, List<Object> waypoints) {
+		Target(Object world, Map<String, List<Object>> waypointSets, boolean publicSetCreated) {
 			this.world = world;
-			this.waypoints = waypoints;
+			this.waypointSets = waypointSets;
+			this.publicSetCreated = publicSetCreated;
 		}
 
 		Object world() {
@@ -29,7 +36,15 @@ interface XaeroWaypointBridge {
 		}
 
 		List<Object> waypoints() {
-			return waypoints;
+			return waypointSets.get(PUBLIC_WAYPOINT_SET);
+		}
+
+		Map<String, List<Object>> waypointSets() {
+			return waypointSets;
+		}
+
+		boolean publicSetCreated() {
+			return publicSetCreated;
 		}
 	}
 

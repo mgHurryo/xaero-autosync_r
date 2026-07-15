@@ -13,7 +13,9 @@ import cn.net.rms.xaeromapsync_r.waypoint.XaeroWaypointPalette;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -50,13 +52,13 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		assertEquals(4, result.ignored());
 		assertTrue(result.saved());
 		assertEquals(1, bridge.saveCount);
-		assertEquals(3, bridge.points.size());
-		assertSame(privatePoint, bridge.points.get(0));
-		assertSame(updatePoint, bridge.points.get(1));
+		assertEquals(3, bridge.publicPoints().size());
+		assertSame(privatePoint, bridge.publicPoints().get(0));
+		assertSame(updatePoint, bridge.publicPoints().get(1));
 		assertEquals(new WaypointValues(10, 64, -3, XaeroWaypointIdentity.managedName("Updated", updateId), "U", 11), updatePoint.values);
-		assertTrue(bridge.points.stream().anyMatch(point -> XaeroWaypointIdentity.parse(point.values.name).filter(createId::equals).isPresent()));
-		assertFalse(bridge.points.contains(duplicatePoint));
-		assertFalse(bridge.points.contains(stalePoint));
+		assertTrue(bridge.publicPoints().stream().anyMatch(point -> XaeroWaypointIdentity.parse(point.values.name).filter(createId::equals).isPresent()));
+		assertFalse(bridge.publicPoints().contains(duplicatePoint));
+		assertFalse(bridge.publicPoints().contains(stalePoint));
 	}
 
 	@Test
@@ -88,7 +90,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		assertEquals("machines", create.waypoint().category());
 		assertEquals(11, create.waypoint().color());
 		assertEquals(XaeroWaypointReconcileResult.Outcome.NO_CHANGES, result.outcome());
-		assertEquals(List.of(source), bridge.points);
+		assertEquals(List.of(source), bridge.publicPoints());
 		assertEquals("Factory", XaeroWaypointIdentity.displayName(source.values.name));
 		assertEquals(create.waypoint().id(), XaeroWaypointIdentity.parse(source.values.name).orElseThrow());
 		assertEquals(1, bridge.saveCount);
@@ -150,7 +152,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 
 		assertEquals(XaeroWaypointReconcileResult.Outcome.APPLIED, result.outcome());
 		assertEquals(1, result.updated());
-		assertEquals(List.of(source), bridge.points);
+		assertEquals(List.of(source), bridge.publicPoints());
 		assertEquals(1, source.values.x);
 		assertEquals("Before edit", XaeroWaypointIdentity.displayName(source.values.name));
 	}
@@ -169,7 +171,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		XaeroWaypointReconcileResult result = adapter.reconcile(List.of(serverCopy));
 
 		assertEquals(1, result.updated());
-		assertEquals(List.of(remote), bridge.points);
+		assertEquals(List.of(remote), bridge.publicPoints());
 		assertEquals(id, XaeroWaypointIdentity.parse(remote.values.name).orElseThrow());
 		assertEquals("Remote", XaeroWaypointIdentity.displayName(remote.values.name));
 	}
@@ -245,7 +247,104 @@ final class ReflectiveXaeroWaypointAdapterTest {
 				waypoint(UUID.randomUUID(), UUID.randomUUID(), "New", OVERWORLD, 40, 50, 60, "N", 5, WaypointVisibility.PUBLIC, false, 1L)));
 
 		assertEquals(XaeroWaypointReconcileResult.Outcome.FAILED, result.outcome());
-		assertEquals(List.of(privatePoint, updatePoint, stalePoint), bridge.points);
+		assertEquals(List.of(privatePoint, updatePoint, stalePoint), bridge.publicPoints());
+		assertEquals(originalUpdate, updatePoint.values);
+		assertFalse(adapter.isAvailable());
+	}
+
+	@Test
+	void reconcileCreatesAndReusesIndependentSetWithoutChangingCurrentSet() {
+		UUID id = UUID.randomUUID();
+		FakePoint privatePoint = point("Private", 1, 64, 2, "P", 3);
+		FakeBridge bridge = new FakeBridge();
+		bridge.addToSet("gui.xaero_default", privatePoint);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+		PublicWaypoint remote = waypoint(id, UUID.randomUUID(), "Remote", OVERWORLD, 5, 70, 6, "R", 4,
+				WaypointVisibility.PUBLIC, false, 1L);
+
+		XaeroWaypointReconcileResult first = adapter.reconcile(List.of(remote));
+		XaeroWaypointReconcileResult second = adapter.reconcile(List.of(remote));
+
+		assertEquals(XaeroWaypointReconcileResult.Outcome.APPLIED, first.outcome());
+		assertEquals(XaeroWaypointReconcileResult.Outcome.NO_CHANGES, second.outcome());
+		assertEquals(1, bridge.addSetCount);
+		assertEquals("gui.xaero_default", bridge.currentSet);
+		assertEquals(List.of(privatePoint), bridge.points("gui.xaero_default"));
+		assertEquals(1, bridge.publicPoints().size());
+		assertEquals(id, XaeroWaypointIdentity.parse(bridge.publicPoints().get(0).values.name).orElseThrow());
+		assertEquals(1, bridge.saveCount);
+	}
+
+	@Test
+	void reconcileMigratesLegacyPointAndPreservesLocalHiddenState() {
+		UUID id = UUID.randomUUID();
+		FakePoint legacy = managed(id, "Hidden remote", 3, 65, 4, "H", 7);
+		legacy.disabled = true;
+		FakeBridge bridge = new FakeBridge();
+		bridge.addToSet("legacy", legacy);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+		PublicWaypoint remote = waypoint(id, UUID.randomUUID(), "Hidden remote", OVERWORLD, 3, 65, 4, "H", 7,
+				WaypointVisibility.PUBLIC, false, 1L);
+
+		XaeroWaypointReconcileResult result = adapter.reconcile(List.of(remote));
+
+		assertEquals(XaeroWaypointReconcileResult.Outcome.APPLIED, result.outcome());
+		assertEquals(1, result.updated());
+		assertTrue(bridge.points("legacy").isEmpty());
+		assertEquals(List.of(legacy), bridge.publicPoints());
+		assertTrue(legacy.disabled);
+	}
+
+	@Test
+	void creatorSourceMovesToPublicSetAndReturnsToOriginalCategoryAfterDeletion() {
+		FakePoint source = point("Factory", 12, 70, -8, "F", 11);
+		source.disabled = true;
+		FakeBridge bridge = new FakeBridge();
+		bridge.addToSet("machines", source);
+		bridge.select(source, "machines", OVERWORLD);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+		XaeroWaypointMutation create = adapter.prepareShare(new Object(), WaypointVisibility.PUBLIC, List.of(),
+				PLAYER_ID, "Builder");
+		PublicWaypoint accepted = withServerState(create.waypoint(), 5L);
+
+		XaeroWaypointReconcileResult shared = adapter.reconcile(List.of(accepted));
+		XaeroWaypointReconcileResult removed = adapter.reconcile(List.of(asDeleted(accepted)));
+
+		assertEquals(XaeroWaypointReconcileResult.Outcome.APPLIED, shared.outcome());
+		assertEquals(XaeroWaypointReconcileResult.Outcome.APPLIED, removed.outcome());
+		assertEquals(1, removed.deleted());
+		assertTrue(bridge.publicPoints().isEmpty());
+		assertEquals(List.of(source), bridge.points("machines"));
+		assertEquals("Factory", source.values.name);
+		assertTrue(source.disabled);
+	}
+
+	@Test
+	void saveFailureRollsBackEveryWaypointSetAndMovedObjectValue() {
+		UUID updateId = UUID.randomUUID();
+		UUID staleId = UUID.randomUUID();
+		FakePoint privatePoint = point("Private", 0, 64, 0, "P", 1);
+		FakePoint updatePoint = managed(updateId, "Before", 1, 2, 3, "B", 2);
+		FakePoint stalePoint = managed(staleId, "Stale", 4, 5, 6, "S", 3);
+		WaypointValues originalUpdate = updatePoint.values;
+		FakeBridge bridge = new FakeBridge();
+		bridge.addToSet("gui.xaero_default", privatePoint);
+		bridge.addToSet("legacy", updatePoint);
+		bridge.addToSet("other", stalePoint);
+		bridge.failOnSave = true;
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+
+		XaeroWaypointReconcileResult result = adapter.reconcile(List.of(
+				waypoint(updateId, UUID.randomUUID(), "After", OVERWORLD, 10, 20, 30, "A", 4,
+						WaypointVisibility.PUBLIC, false, 1L),
+				waypoint(UUID.randomUUID(), UUID.randomUUID(), "New", OVERWORLD, 40, 50, 60, "N", 5,
+						WaypointVisibility.PUBLIC, false, 1L)));
+
+		assertEquals(XaeroWaypointReconcileResult.Outcome.FAILED, result.outcome());
+		assertEquals(List.of(privatePoint), bridge.points("gui.xaero_default"));
+		assertEquals(List.of(updatePoint), bridge.points("legacy"));
+		assertEquals(List.of(stalePoint), bridge.points("other"));
+		assertFalse(bridge.waypointSets.containsKey(XaeroWaypointBridge.PUBLIC_WAYPOINT_SET));
 		assertEquals(originalUpdate, updatePoint.values);
 		assertFalse(adapter.isAvailable());
 	}
@@ -283,8 +382,13 @@ final class ReflectiveXaeroWaypointAdapterTest {
 				waypoint.category(), waypoint.visibility(), revision, false, 1L, 2L);
 	}
 
+	private static PublicWaypoint asDeleted(PublicWaypoint waypoint) {
+		return waypoint.tombstone(waypoint.revision() + 1L, waypoint.updatedAtMillis() + 1L);
+	}
+
 	private static final class FakePoint {
 		private WaypointValues values;
+		private boolean disabled;
 
 		private FakePoint(WaypointValues values) {
 			this.values = values;
@@ -293,18 +397,34 @@ final class ReflectiveXaeroWaypointAdapterTest {
 
 	private static final class FakeBridge implements XaeroWaypointBridge {
 		private final Object world = new Object();
-		private final List<FakePoint> points = new ArrayList<>();
+		private final Map<String, List<FakePoint>> waypointSets = new LinkedHashMap<>();
+		private String currentSet = "gui.xaero_default";
+		private int addSetCount;
 		private int saveCount;
 		private boolean failOnTarget;
 		private boolean failOnSave;
 		private SelectedWaypoint selected;
 
 		private FakeBridge(FakePoint... points) {
-			this.points.addAll(Arrays.asList(points));
+			if (points.length != 0) {
+				waypointSets.put(PUBLIC_WAYPOINT_SET, new ArrayList<>(Arrays.asList(points)));
+			}
 		}
 
 		private void select(FakePoint point, String category, String dimension) {
 			selected = new SelectedWaypoint(point, world, point.values, category, dimension);
+		}
+
+		private void addToSet(String category, FakePoint... points) {
+			waypointSets.computeIfAbsent(category, ignored -> new ArrayList<>()).addAll(Arrays.asList(points));
+		}
+
+		private List<FakePoint> points(String category) {
+			return waypointSets.getOrDefault(category, List.of());
+		}
+
+		private List<FakePoint> publicPoints() {
+			return points(PUBLIC_WAYPOINT_SET);
 		}
 
 		@Override
@@ -313,7 +433,12 @@ final class ReflectiveXaeroWaypointAdapterTest {
 			if (failOnTarget) {
 				throw new ReflectiveOperationException("test failure");
 			}
-			return new Target(world, (List) points);
+			boolean created = !waypointSets.containsKey(PUBLIC_WAYPOINT_SET);
+			if (created) {
+				waypointSets.put(PUBLIC_WAYPOINT_SET, new ArrayList<>());
+				addSetCount++;
+			}
+			return new Target(world, (Map) waypointSets, created);
 		}
 
 		@Override
@@ -347,6 +472,12 @@ final class ReflectiveXaeroWaypointAdapterTest {
 				throw new ReflectiveOperationException("save failure");
 			}
 			saveCount++;
+		}
+
+		@Override
+		public void removeSet(Object world, String setKey) {
+			assertSame(this.world, world);
+			waypointSets.remove(setKey);
 		}
 	}
 }

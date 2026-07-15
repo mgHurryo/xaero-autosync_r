@@ -5,7 +5,10 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceKey;
 
@@ -15,6 +18,8 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 	private final Method getModMain;
 	private final Method getCurrentWorld;
 	private final Method getCurrentSet;
+	private final Method getSets;
+	private final Method addSet;
 	private final Method getList;
 	private final Method getSetName;
 	private final Method getWorldId;
@@ -56,6 +61,8 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 		getModMain = requireMethod(sessionClass, "getModMain", modMainClass);
 		getCurrentWorld = requireMethod(managerClass, "getCurrentWorld", worldClass);
 		getCurrentSet = requireMethod(worldClass, "getCurrentSet", setClass);
+		getSets = requireMethod(worldClass, "getSets", HashMap.class);
+		addSet = requireMethod(worldClass, "addSet", void.class, String.class);
 		getList = requireMethod(setClass, "getList", java.util.ArrayList.class);
 		getSetName = requireMethod(setClass, "getName", String.class);
 		getWorldId = requireMethod(worldClass, "getId", String.class);
@@ -87,11 +94,24 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 	@SuppressWarnings("unchecked")
 	public Target currentTarget() throws ReflectiveOperationException {
 		Object world = currentWorld();
-		Object set = invoke(getCurrentSet, world);
-		if (set == null) {
-			throw new IllegalStateException("Xaero current waypoint set is not initialized");
+		Map<String, Object> sets = (Map<String, Object>) invoke(getSets, world);
+		if (sets == null) {
+			throw new IllegalStateException("Xaero waypoint sets are not initialized");
 		}
-		return new Target(world, (List<Object>) invoke(getList, set));
+		boolean publicSetCreated = false;
+		if (!sets.containsKey(PUBLIC_WAYPOINT_SET)) {
+			invoke(addSet, world, PUBLIC_WAYPOINT_SET);
+			publicSetCreated = true;
+		}
+		Object publicSet = sets.get(PUBLIC_WAYPOINT_SET);
+		if (publicSet == null) {
+			throw new IllegalStateException("Xaero public waypoint set was not created");
+		}
+		Map<String, List<Object>> waypointSets = new LinkedHashMap<>();
+		for (Map.Entry<String, Object> entry : sets.entrySet()) {
+			waypointSets.put(entry.getKey(), (List<Object>) invoke(getList, entry.getValue()));
+		}
+		return new Target(world, waypointSets, publicSetCreated);
 	}
 
 	@Override
@@ -193,6 +213,15 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 		Object modMain = invoke(getModMain, session);
 		Object settings = invoke(getSettings, modMain);
 		invoke(saveWaypoints, settings, world);
+	}
+
+	@Override
+	@SuppressWarnings("unchecked")
+	public void removeSet(Object world, String setKey) throws ReflectiveOperationException {
+		Map<String, Object> sets = (Map<String, Object>) invoke(getSets, world);
+		if (sets != null) {
+			sets.remove(setKey);
+		}
 	}
 
 	private static Method requireMethod(Class<?> owner, String name, Class<?> returnType, Class<?>... parameterTypes) throws NoSuchMethodException {

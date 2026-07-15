@@ -26,7 +26,7 @@ public final class XaeroWaypointScreenIntegration {
 	private static final int BUTTON_HORIZONTAL_PADDING = 20;
 	private static final int MIN_BUTTON_WIDTH = 72;
 	private static final List<String> LOCKED_XAERO_BUTTON_FIELDS = List.of(
-			"deleteButton", "editButton", "disableEnableButton", "clearButton", "shareButton");
+			"deleteButton", "editButton", "clearButton", "shareButton");
 
 	private XaeroWaypointScreenIntegration() {
 	}

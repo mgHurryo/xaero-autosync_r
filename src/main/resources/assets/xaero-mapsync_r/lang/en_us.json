@@ -1,4 +1,5 @@
 {
+  "gui.xaero-mapsync_r.public_waypoints": "Shared Waypoints",
   "screen.xaero-mapsync_r.share.public": "Public",
   "screen.xaero-mapsync_r.share.team": "Team",
   "screen.xaero-mapsync_r.share.remove": "Delete shared",

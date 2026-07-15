@@ -25,6 +25,7 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 	private final BooleanSupplier clientThread;
 	private final Map<UUID, Object> boundSources = new HashMap<>();
 	private final IdentityHashMap<Object, UUID> sourceIds = new IdentityHashMap<>();
+	private final Map<UUID, String> sourceCategories = new HashMap<>();
 	private final Map<UUID, Object> managedSources = new HashMap<>();
 	private final IdentityHashMap<Object, UUID> managedSourceIds = new IdentityHashMap<>();
 	private final Map<UUID, PublicWaypoint> pendingCreates = new HashMap<>();
@@ -61,7 +62,7 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 
 		int ignored = 0;
 		XaeroWaypointBridge.Target target = null;
-		List<Object> originalOrder = null;
+		Map<String, List<Object>> originalOrders = null;
 		Map<Object, WaypointValues> originalValues = new IdentityHashMap<>();
 		try {
 			String dimension = currentDimension.get();
@@ -69,12 +70,13 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 				throw new IllegalStateException("Minecraft client world is not initialized");
 			}
 			Map<UUID, PublicWaypoint> desired = new HashMap<>();
+			Map<UUID, PublicWaypoint> known = new HashMap<>();
 			Set<UUID> knownIds = new HashSet<>();
 			for (PublicWaypoint waypoint : waypoints) {
 				if (waypoint != null && waypoint.id() != null) {
 					knownIds.add(waypoint.id());
+					known.put(waypoint.id(), waypoint);
 					if (waypoint.deleted()) {
-						unbind(waypoint.id());
 						pendingCreates.remove(waypoint.id());
 					}
 				}
@@ -86,40 +88,53 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 				desired.put(waypoint.id(), waypoint.withColor(XaeroWaypointPalette.normalize(waypoint.color())));
 				pendingCreates.remove(waypoint.id());
 			}
-			for (UUID id : new ArrayList<>(boundSources.keySet())) {
-				if (!knownIds.contains(id) && !pendingCreates.containsKey(id)) {
-					unbind(id);
-				}
-			}
 
 			target = bridge.currentTarget();
-			List<Object> list = target.waypoints();
-			originalOrder = new ArrayList<>(list);
+			Map<String, List<Object>> waypointSets = target.waypointSets();
+			List<Object> publicWaypoints = target.waypoints();
+			originalOrders = snapshotOrders(waypointSets);
 			Map<UUID, Object> managed = new HashMap<>();
-			List<Object> remove = new ArrayList<>();
-			for (Object xaeroWaypoint : new ArrayList<>(list)) {
-				WaypointValues currentValues = bridge.read(xaeroWaypoint);
-				UUID id = XaeroWaypointIdentity.parse(currentValues.name).orElse(null);
-				if (id == null) {
-					continue;
-				}
-				originalValues.put(xaeroWaypoint, currentValues);
-				if (managed.putIfAbsent(id, xaeroWaypoint) != null || !desired.containsKey(id)) {
-					remove.add(xaeroWaypoint);
-				} else {
-					bindManaged(id, xaeroWaypoint);
+			Set<Object> remove = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+			Set<Object> scanned = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+			for (List<Object> setWaypoints : waypointSets.values()) {
+				for (Object xaeroWaypoint : new ArrayList<>(setWaypoints)) {
+					if (!scanned.add(xaeroWaypoint)) {
+						continue;
+					}
+					WaypointValues currentValues = bridge.read(xaeroWaypoint);
+					UUID id = XaeroWaypointIdentity.parse(currentValues.name).orElse(null);
+					if (id == null) {
+						continue;
+					}
+					originalValues.put(xaeroWaypoint, currentValues);
+					Object existing = managed.putIfAbsent(id, xaeroWaypoint);
+					if (existing != null && existing != xaeroWaypoint) {
+						Object boundSource = boundSources.get(id);
+						if (boundSource == xaeroWaypoint && boundSource != existing) {
+							managed.put(id, xaeroWaypoint);
+							remove.add(existing);
+						} else {
+							remove.add(xaeroWaypoint);
+						}
+					}
 				}
 			}
 			for (Map.Entry<UUID, Object> entry : new ArrayList<>(managedSources.entrySet())) {
-				if (list.contains(entry.getValue()) && desired.containsKey(entry.getKey())) {
-					managed.putIfAbsent(entry.getKey(), entry.getValue());
-				} else {
+				if (!desired.containsKey(entry.getKey()) || !containsIdentity(waypointSets, entry.getValue())) {
 					unbindManaged(entry.getKey());
+					continue;
+				}
+				remove.remove(entry.getValue());
+				Object existing = managed.put(entry.getKey(), entry.getValue());
+				if (existing != null && existing != entry.getValue()) {
+					remove.add(existing);
 				}
 			}
 
 			int created = 0;
 			int updated = 0;
+			int deleted = 0;
+			boolean changed = target.publicSetCreated();
 			UUID playerId = localPlayerId.get();
 			for (Map.Entry<UUID, PublicWaypoint> entry : desired.entrySet()) {
 				UUID id = entry.getKey();
@@ -127,17 +142,19 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 				Object managedPoint = managed.get(id);
 				if (Objects.equals(playerId, waypoint.creatorId())) {
 					Object source = boundSources.get(id);
+					if (source != null && !containsIdentity(waypointSets, source)) {
+						source = null;
+					}
 					if (source == null && managedPoint != null) {
 						source = managedPoint;
-						bind(id, source);
 					}
 					if (source == null) {
-						source = findMatchingSource(list, waypoint);
-						if (source != null) {
-							bind(id, source);
-						}
+						source = findMatchingSource(waypointSets, waypoint);
 					}
 					if (source != null) {
+						remove.remove(source);
+						bind(id, source);
+						sourceCategories.put(id, waypoint.category());
 						if (managedPoint != null && managedPoint != source) {
 							remove.add(managedPoint);
 						}
@@ -149,26 +166,85 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 				WaypointValues desiredValues = toManagedValues(waypoint);
 				if (managedPoint == null) {
 					Object createdPoint = bridge.create(desiredValues);
-					list.add(createdPoint);
+					publicWaypoints.add(createdPoint);
+					managed.put(id, createdPoint);
 					bindManaged(id, createdPoint);
 					created++;
-				} else if (!desiredValues.equals(bridge.read(managedPoint))) {
-					bridge.update(managedPoint, desiredValues);
+					changed = true;
+				} else {
+					boolean pointUpdated = false;
+					WaypointValues currentValues = bridge.read(managedPoint);
+					originalValues.putIfAbsent(managedPoint, currentValues);
+					if (!desiredValues.equals(currentValues)) {
+						bridge.update(managedPoint, desiredValues);
+						pointUpdated = true;
+						changed = true;
+					}
+					if (moveToSet(waypointSets, managedPoint, XaeroWaypointBridge.PUBLIC_WAYPOINT_SET)) {
+						changed = true;
+						pointUpdated = true;
+					}
 					bindManaged(id, managedPoint);
-					updated++;
+					if (pointUpdated) {
+						updated++;
+					}
 				}
 			}
-			remove = new ArrayList<>(new java.util.LinkedHashSet<>(remove));
-			list.removeAll(remove);
-			int deleted = remove.size();
-			boolean changed = created != 0 || updated != 0 || deleted != 0;
+
+			for (Map.Entry<UUID, Object> entry : managed.entrySet()) {
+				if (desired.containsKey(entry.getKey())) {
+					continue;
+				}
+				UUID id = entry.getKey();
+				Object managedPoint = entry.getValue();
+				PublicWaypoint record = known.get(id);
+				Object source = boundSources.get(id);
+				boolean creatorSource = source == managedPoint
+						|| record != null && Objects.equals(playerId, record.creatorId());
+				if (creatorSource) {
+					String category = record == null ? sourceCategories.get(id) : record.category();
+					List<Object> originalCategory = waypointSets.get(category);
+					if (originalCategory == null) {
+						throw new IllegalStateException("Xaero source waypoint set is not initialized: " + category);
+					}
+					WaypointValues values = bridge.read(managedPoint);
+					originalValues.putIfAbsent(managedPoint, values);
+					String restoredName = XaeroWaypointIdentity.displayName(values.name);
+					if (!restoredName.equals(values.name)) {
+						bridge.update(managedPoint, new WaypointValues(values.x, values.y, values.z, restoredName,
+								values.symbol, values.color));
+					}
+					moveToSet(waypointSets, managedPoint, category);
+				} else {
+					removeFromAllSets(waypointSets, managedPoint);
+				}
+				unbind(id);
+				deleted++;
+				changed = true;
+			}
+			for (Object duplicate : remove) {
+				if (removeFromAllSets(waypointSets, duplicate)) {
+					deleted++;
+					changed = true;
+				}
+			}
+			for (UUID id : new ArrayList<>(boundSources.keySet())) {
+				if (!knownIds.contains(id) && !pendingCreates.containsKey(id)) {
+					unbind(id);
+				}
+			}
+			for (UUID id : new ArrayList<>(managedSources.keySet())) {
+				if (!desired.containsKey(id)) {
+					unbindManaged(id);
+				}
+			}
 			if (changed) {
 				bridge.save(target.world());
 			}
 			XaeroMapsync_r.LOGGER.info("Xaero waypoint reconcile completed: created={}, updated={}, deleted={}, ignored={}, saved={}", created, updated, deleted, ignored, changed);
 			return XaeroWaypointReconcileResult.completed(created, updated, deleted, ignored, changed);
 		} catch (RuntimeException | ReflectiveOperationException | LinkageError exception) {
-			rollback(target, originalOrder, originalValues);
+			rollback(target, originalOrders, originalValues);
 			if (isNotReady(exception)) {
 				String message = "Xaero waypoint runtime is not ready; reconciliation will be retried";
 				XaeroMapsync_r.LOGGER.debug(message);
@@ -212,6 +288,7 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 		pendingCreates.put(id, candidate);
 		candidate.validate();
 		bind(candidate.id(), selected.nativeWaypoint());
+		sourceCategories.put(candidate.id(), selected.category());
 		persistIdentity(selected, candidate.id());
 		return new XaeroWaypointMutation(candidate, false);
 	}
@@ -357,7 +434,12 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 				&& XaeroWaypointPalette.normalize(values.color) == XaeroWaypointPalette.normalize(waypoint.color());
 	}
 
-	private Object findMatchingSource(List<Object> points, PublicWaypoint waypoint) throws ReflectiveOperationException {
+	private Object findMatchingSource(Map<String, List<Object>> waypointSets, PublicWaypoint waypoint)
+			throws ReflectiveOperationException {
+		List<Object> points = waypointSets.get(waypoint.category());
+		if (points == null) {
+			return null;
+		}
 		for (Object point : points) {
 			WaypointValues values = bridge.read(point);
 			if (XaeroWaypointIdentity.parse(values.name).isEmpty()
@@ -400,6 +482,7 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 		if (source != null) {
 			sourceIds.remove(source);
 		}
+		sourceCategories.remove(id);
 		unbindManaged(id);
 	}
 
@@ -449,20 +532,85 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 		return false;
 	}
 
-	private void rollback(XaeroWaypointBridge.Target target, List<Object> originalOrder,
+	private void rollback(XaeroWaypointBridge.Target target, Map<String, List<Object>> originalOrders,
 			Map<Object, WaypointValues> originalValues) {
-		if (target == null || originalOrder == null) {
+		if (target == null || originalOrders == null) {
 			return;
 		}
 		try {
 			for (Map.Entry<Object, WaypointValues> entry : originalValues.entrySet()) {
 				bridge.update(entry.getKey(), entry.getValue());
 			}
-			target.waypoints().clear();
-			target.waypoints().addAll(originalOrder);
+			for (Map.Entry<String, List<Object>> entry : originalOrders.entrySet()) {
+				List<Object> waypoints = target.waypointSets().get(entry.getKey());
+				if (waypoints != null) {
+					waypoints.clear();
+					waypoints.addAll(entry.getValue());
+				}
+			}
+			if (target.publicSetCreated()) {
+				bridge.removeSet(target.world(), XaeroWaypointBridge.PUBLIC_WAYPOINT_SET);
+			}
 		} catch (RuntimeException | ReflectiveOperationException | LinkageError rollbackException) {
 			XaeroMapsync_r.LOGGER.error("Failed to roll back Xaero waypoint batch after reconciliation error", rollbackException);
 		}
+	}
+
+	private static Map<String, List<Object>> snapshotOrders(Map<String, List<Object>> waypointSets) {
+		Map<String, List<Object>> snapshot = new HashMap<>();
+		for (Map.Entry<String, List<Object>> entry : waypointSets.entrySet()) {
+			snapshot.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+		}
+		return snapshot;
+	}
+
+	private static boolean containsIdentity(Map<String, List<Object>> waypointSets, Object waypoint) {
+		for (List<Object> setWaypoints : waypointSets.values()) {
+			for (Object candidate : setWaypoints) {
+				if (candidate == waypoint) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private static boolean moveToSet(Map<String, List<Object>> waypointSets, Object waypoint, String targetSet) {
+		List<Object> destination = waypointSets.get(targetSet);
+		if (destination == null) {
+			throw new IllegalStateException("Xaero waypoint set is not initialized: " + targetSet);
+		}
+		int totalOccurrences = 0;
+		int destinationOccurrences = 0;
+		for (Map.Entry<String, List<Object>> entry : waypointSets.entrySet()) {
+			for (Object candidate : entry.getValue()) {
+				if (candidate == waypoint) {
+					totalOccurrences++;
+					if (entry.getValue() == destination) {
+						destinationOccurrences++;
+					}
+				}
+			}
+		}
+		if (totalOccurrences == 1 && destinationOccurrences == 1) {
+			return false;
+		}
+		removeFromAllSets(waypointSets, waypoint);
+		destination.add(waypoint);
+		return true;
+	}
+
+	private static boolean removeFromAllSets(Map<String, List<Object>> waypointSets, Object waypoint) {
+		boolean removed = false;
+		for (List<Object> setWaypoints : waypointSets.values()) {
+			for (int index = setWaypoints.size() - 1; index >= 0; index--) {
+				if (setWaypoints.get(index) == waypoint) {
+					setWaypoints.remove(index);
+					removed = true;
+				}
+			}
+		}
+		return removed;
 	}
 
 	private static boolean isEligible(PublicWaypoint waypoint, String dimension) {

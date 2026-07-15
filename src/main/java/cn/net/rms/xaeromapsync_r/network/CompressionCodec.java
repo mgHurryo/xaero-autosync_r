@@ -15,9 +15,9 @@ import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 public final class CompressionCodec {
-	private static final int SURFACE_MAGIC = 0x4d545333;
+	private static final int SURFACE_MAGIC = 0x4d545335;
 	private static final int BUFFER_SIZE = 512;
-	private static final int MAX_SURFACE_BYTES = 64 * 1024;
+	private static final int MAX_SURFACE_BYTES = 128 * 1024;
 
 	private CompressionCodec() {
 	}
@@ -39,7 +39,7 @@ public final class CompressionCodec {
 				writeInts(output, surface.baseStateIds());
 				writeInts(output, surface.baseHeights());
 				writeInts(output, surface.topHeights());
-				writeInts(output, surface.biomeIds());
+				writeStrings(output, surface.biomeKeys());
 				output.write(surface.lightAbove());
 				writeBooleans(output, surface.glowing());
 				writeBooleans(output, surface.cave());
@@ -50,6 +50,7 @@ public final class CompressionCodec {
 						output.writeFloat(overlay.transparency());
 						output.writeByte(overlay.lightAbove());
 						output.writeByte(overlay.glowing() ? 1 : 0);
+						output.writeShort(overlay.opacity());
 					}
 				}
 			}
@@ -75,7 +76,7 @@ public final class CompressionCodec {
 			int[] baseStates = readInts(input, count);
 			int[] baseHeights = readInts(input, count);
 			int[] topHeights = readInts(input, count);
-			int[] biomes = readInts(input, count);
+			String[] biomes = readStrings(input, count);
 			byte[] lights = new byte[count];
 			input.readFully(lights);
 			boolean[] glowing = readBooleans(input, count);
@@ -93,7 +94,8 @@ public final class CompressionCodec {
 					byte light = input.readByte();
 					int overlayGlowing = input.readUnsignedByte();
 					if (overlayGlowing > 1) throw new IllegalArgumentException("Invalid overlay glowing value: " + overlayGlowing);
-					column.add(new MapTile.Overlay(stateId, transparency, light, overlayGlowing == 1));
+					int opacity = input.readUnsignedShort();
+					column.add(new MapTile.Overlay(stateId, transparency, light, overlayGlowing == 1, opacity));
 				}
 				overlays.add(List.copyOf(column));
 			}
@@ -120,7 +122,7 @@ public final class CompressionCodec {
 	private static void validateSurfaceCounts(MapTileSurfaceData surface) {
 		int count = surface.baseStateIds().length;
 		if (count > 0xffff || surface.baseHeights().length != count || surface.topHeights().length != count
-				|| surface.biomeIds().length != count || surface.lightAbove().length != count
+				|| surface.biomeKeys().length != count || surface.lightAbove().length != count
 				|| surface.glowing().length != count || surface.cave().length != count || surface.overlays().size() != count) {
 			throw new IllegalArgumentException("Map tile surface data must have equal column counts");
 		}
@@ -138,6 +140,16 @@ public final class CompressionCodec {
 	private static int[] readInts(DataInputStream input, int count) throws IOException {
 		int[] values = new int[count];
 		for (int index = 0; index < count; index++) values[index] = input.readInt();
+		return values;
+	}
+
+	private static void writeStrings(DataOutputStream output, String[] values) throws IOException {
+		for (String value : values) output.writeUTF(value);
+	}
+
+	private static String[] readStrings(DataInputStream input, int count) throws IOException {
+		String[] values = new String[count];
+		for (int index = 0; index < count; index++) values[index] = input.readUTF();
 		return values;
 	}
 
@@ -196,10 +208,10 @@ public final class CompressionCodec {
 		}
 	}
 
-	public record MapTileSurfaceData(int[] baseStateIds, int[] baseHeights, int[] topHeights, int[] biomeIds,
+	public record MapTileSurfaceData(int[] baseStateIds, int[] baseHeights, int[] topHeights, String[] biomeKeys,
 			byte[] lightAbove, boolean[] glowing, boolean[] cave, List<List<MapTile.Overlay>> overlays) {
 		public static MapTileSurfaceData fromTile(MapTile tile) {
-			return new MapTileSurfaceData(tile.baseStateIds(), tile.baseHeights(), tile.topHeights(), tile.biomeIds(),
+			return new MapTileSurfaceData(tile.baseStateIds(), tile.baseHeights(), tile.topHeights(), tile.biomeKeys(),
 					tile.lightAbove(), tile.glowing(), tile.cave(), tile.overlays());
 		}
 	}

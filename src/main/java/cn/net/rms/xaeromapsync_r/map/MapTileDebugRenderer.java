@@ -14,17 +14,21 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.AbstractGlassBlock;
+import net.minecraft.world.level.block.BaseFireBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.HalfTransparentBlock;
 import net.minecraft.world.level.block.IceBlock;
 import net.minecraft.world.level.block.LiquidBlock;
+import net.minecraft.world.level.block.TorchBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.material.Fluids;
 
 public final class MapTileDebugRenderer {
-	public static final int SURFACE_SAMPLER_VERSION = 2;
+	public static final int SURFACE_SAMPLER_VERSION = 4;
 	private static final int TILE_SIDE = 16;
 	private static final int TILE_AREA = TILE_SIDE * TILE_SIDE;
 	private static final float WATER_TRANSPARENCY = 0.66F;
@@ -71,7 +75,7 @@ public final class MapTileDebugRenderer {
 		int[] baseStateIds = new int[TILE_AREA];
 		int[] baseHeights = new int[TILE_AREA];
 		int[] topHeights = new int[TILE_AREA];
-		int[] biomeIds = new int[TILE_AREA];
+		String[] biomeKeys = new String[TILE_AREA];
 		byte[] lightAbove = new byte[TILE_AREA];
 		boolean[] glowing = new boolean[TILE_AREA];
 		boolean[] cave = new boolean[TILE_AREA];
@@ -93,7 +97,9 @@ public final class MapTileDebugRenderer {
 				baseHeights[index] = surface.baseHeight;
 				topHeights[index] = surface.topHeight;
 				scanPos.set(worldX, surface.topHeight, worldZ);
-				biomeIds[index] = biomeRegistry.getId(level.getBiome(scanPos));
+				var biomeKey = biomeRegistry.getKey(level.getBiome(scanPos));
+				if (biomeKey == null) throw new IllegalStateException("Biome is not registered at " + scanPos);
+				biomeKeys[index] = biomeKey.toString();
 				lightAbove[index] = surface.lightAbove;
 				glowing[index] = isGlowing(surface.baseState);
 				cave[index] = !level.dimensionType().hasSkyLight();
@@ -101,10 +107,10 @@ public final class MapTileDebugRenderer {
 			}
 		}
 
-		long hash = MapTileHasher.hashSurface(baseStateIds, baseHeights, topHeights, biomeIds, lightAbove, glowing, cave,
+		long hash = MapTileHasher.hashSurface(baseStateIds, baseHeights, topHeights, biomeKeys, lightAbove, glowing, cave,
 				overlays);
 		MapTile tile = new MapTile(level.dimension().location().toString(), chunkX, chunkZ, baseStateIds, baseHeights,
-				topHeights, biomeIds, lightAbove, glowing, cave, overlays, hash);
+				topHeights, biomeKeys, lightAbove, glowing, cave, overlays, hash);
 		XaeroMapsync_r.LOGGER.debug("Rendered surface tile {} {} {} hash={}", tile.dimension(), tile.chunkX(), tile.chunkZ(),
 				tile.contentHash());
 		return tile;
@@ -120,24 +126,29 @@ public final class MapTileDebugRenderer {
 		int topHeight = Integer.MIN_VALUE;
 		int minimumY = level.getMinBuildHeight();
 		for (int y = surfaceY; y >= minimumY; y--) {
-			scanPos.set(localX, y, localZ);
+			scanPos.set(worldX, y, worldZ);
 			BlockState state = chunk.getBlockState(scanPos);
-			if (state.isAir()) continue;
-			if (topHeight == Integer.MIN_VALUE) topHeight = y;
 			lightPos.set(worldX, y + 1, worldZ);
 			byte sampledLight = (byte) level.getBrightness(LightLayer.BLOCK, lightPos);
 			FluidState fluid = state.getFluidState();
 			if (!fluid.isEmpty()) {
-				addOverlay(overlays, fluid.createLegacyBlock(), sampledLight);
-				if (!(state.getBlock() instanceof LiquidBlock)) {
-					return new ColumnSurface(state, y, topHeight, sampledLight, List.copyOf(overlays));
+				BlockState fluidState = fluid.createLegacyBlock();
+				if (isFluidOverlay(fluidState)) {
+					if (topHeight == Integer.MIN_VALUE) topHeight = y;
+					addOverlay(overlays, fluidState, sampledLight, fluidState.getLightBlock(level, scanPos));
+				} else {
+					if (topHeight == Integer.MIN_VALUE) topHeight = y;
+					return new ColumnSurface(fluidState, y, topHeight, sampledLight, List.copyOf(overlays));
 				}
+				if (state.getBlock() instanceof LiquidBlock) continue;
+			}
+			if (isInvisible(state, level, scanPos)) continue;
+			if (isOverlay(state)) {
+				if (topHeight == Integer.MIN_VALUE) topHeight = y;
+				addOverlay(overlays, state, sampledLight, state.getLightBlock(level, scanPos));
 				continue;
 			}
-			if (state.getBlock() instanceof HalfTransparentBlock) {
-				addOverlay(overlays, state, sampledLight);
-				continue;
-			}
+			if (topHeight == Integer.MIN_VALUE) topHeight = y;
 			return new ColumnSurface(state, y, topHeight, sampledLight, List.copyOf(overlays));
 		}
 
@@ -147,17 +158,48 @@ public final class MapTileDebugRenderer {
 				(byte) level.getBrightness(LightLayer.BLOCK, lightPos), List.copyOf(overlays));
 	}
 
-	private static void addOverlay(List<MapTile.Overlay> overlays, BlockState state, byte lightAbove) {
+	static boolean isFluidOverlay(BlockState state) {
+		return state.getFluidState().getType() == Fluids.WATER
+				|| state.getFluidState().getType() == Fluids.FLOWING_WATER;
+	}
+
+	static boolean isOverlay(BlockState state) {
+		return state.getBlock() instanceof HalfTransparentBlock || state.getBlock() instanceof AbstractGlassBlock;
+	}
+
+	private static boolean isInvisible(BlockState state, ServerLevel level, BlockPos pos) {
+		if (isAlwaysInvisible(state)) return true;
+		return !isOverlay(state) && state.getCollisionShape(level, pos).isEmpty();
+	}
+
+	static boolean isAlwaysInvisible(BlockState state) {
+		return state.isAir() || state.getBlock() == Blocks.GRASS || state.getBlock() instanceof TorchBlock
+				|| state.getBlock() instanceof BaseFireBlock;
+	}
+
+	private static void addOverlay(List<MapTile.Overlay> overlays, BlockState state, byte lightAbove, int opacity) {
 		int stateId = Block.getId(state);
-		appendOverlay(overlays, new MapTile.Overlay(stateId, transparency(state), lightAbove, isGlowing(state)));
+		appendOverlay(overlays, new MapTile.Overlay(stateId, transparency(state), lightAbove, isGlowing(state), opacity));
 	}
 
 	static void appendOverlay(List<MapTile.Overlay> overlays, MapTile.Overlay overlay) {
+		if (!overlays.isEmpty()) {
+			int lastIndex = overlays.size() - 1;
+			MapTile.Overlay previous = overlays.get(lastIndex);
+			if (previous.blockStateId() == overlay.blockStateId()
+					&& Float.compare(previous.transparency(), overlay.transparency()) == 0
+					&& previous.glowing() == overlay.glowing()) {
+				int opacity = Math.min(Short.MAX_VALUE, previous.opacity() + overlay.opacity());
+				overlays.set(lastIndex, new MapTile.Overlay(previous.blockStateId(), previous.transparency(),
+						previous.lightAbove(), previous.glowing(), opacity));
+				return;
+			}
+		}
 		if (overlays.size() < MapTile.MAX_OVERLAYS_PER_COLUMN) overlays.add(overlay);
 	}
 
 	static float transparency(BlockState state) {
-		return transparency(!state.getFluidState().isEmpty(), state.getBlock() instanceof IceBlock);
+		return transparency(state.getBlock() instanceof LiquidBlock, state.getBlock() instanceof IceBlock);
 	}
 
 	static float transparency(boolean water, boolean ice) {

@@ -4,26 +4,32 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
+import cn.net.rms.xaeromapsync_r.xaero.XaeroMapAdapter;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 final class SharedMapClientTest {
-	@TempDir
-	Path tempDirectory;
-
+	@Test
+	void onlyCurrentPendingMerkleResponseCanAdvanceSync() {
+		Set<Long> pending = Set.of(41L, 42L);
+		assertTrue(SharedMapClient.isExpectedMapResponse(7L, pending, 7L, 41L));
+		assertFalse(SharedMapClient.isExpectedMapResponse(7L, pending, 6L, 41L));
+		assertFalse(SharedMapClient.isExpectedMapResponse(7L, pending, 7L, 99L));
+		assertFalse(SharedMapClient.isExpectedMapResponse(0L, pending, 0L, 41L));
+	}
 	@Test
 	void unavailableTilePreventsRootCompletionAfterQueuesDrain() {
-		assertFalse(SharedMapClient.canCompleteMapRoot(true, 0, 0, 0, 0, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(true, 0, 0, 0, 0, 0, 0, 0, 0));
 	}
 
 	@Test
 	void completeRootRequiresEveryQueueAndRequestToBeIdle() {
-		assertTrue(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 0, 0));
-		assertFalse(SharedMapClient.canCompleteMapRoot(false, 1, 0, 0, 0, 0));
-		assertFalse(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 1, 0));
-		assertFalse(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 0, 1));
+		assertTrue(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 0, 0, 0, 0, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(false, 1, 0, 0, 0, 0, 0, 0, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(false, 0, 0, 1, 0, 0, 0, 0, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 0, 0, 1, 0, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 0, 0, 0, 1, 0));
+		assertFalse(SharedMapClient.canCompleteMapRoot(false, 0, 0, 0, 0, 0, 0, 0, 1));
 	}
 
 	@Test
@@ -55,15 +61,24 @@ final class SharedMapClientTest {
 	}
 
 	@Test
-	void replacesExistingRootStateFile() throws Exception {
-		Path target = tempDirectory.resolve("root.properties");
-		Path temp = tempDirectory.resolve("root.properties.tmp");
-		Files.writeString(target, "old");
-		Files.writeString(temp, "new");
+	void localXaeroGenerationIsNeverOverwrittenByRemoteFallback() {
+		assertTrue(SharedMapClient.shouldWaitForLocalTile(XaeroMapAdapter.LocalTileState.GENERATING, 0));
+		assertTrue(SharedMapClient.shouldWaitForLocalTile(XaeroMapAdapter.LocalTileState.GENERATING, 10_000));
+		assertFalse(SharedMapClient.shouldWaitForLocalTile(XaeroMapAdapter.LocalTileState.REMOTE, 0));
+		assertFalse(SharedMapClient.shouldWaitForLocalTile(XaeroMapAdapter.LocalTileState.READY, 0));
+	}
 
-		SharedMapClient.replaceFile(temp, target);
+	@Test
+	void newerPushSupersedesDeferredTileButOlderPayloadDoesNot() {
+		assertTrue(SharedMapClient.shouldReplacePendingRevision(10L, 11L));
+		assertFalse(SharedMapClient.shouldReplacePendingRevision(11L, 11L));
+		assertFalse(SharedMapClient.shouldReplacePendingRevision(12L, 11L));
+	}
 
-		assertEquals("new", Files.readString(target));
-		assertFalse(Files.exists(temp));
+	@Test
+	void appliedRevisionOnlyDiscardsOlderOrEqualPendingTiles() {
+		assertTrue(SharedMapClient.shouldDiscardPendingRevision(10L, 10L));
+		assertTrue(SharedMapClient.shouldDiscardPendingRevision(9L, 10L));
+		assertFalse(SharedMapClient.shouldDiscardPendingRevision(11L, 10L));
 	}
 }

@@ -8,6 +8,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.server.Bootstrap;
+import net.minecraft.SharedConstants;
 import org.junit.jupiter.api.Test;
 
 final class MapTileDebugRendererTest {
@@ -31,13 +34,26 @@ final class MapTileDebugRendererTest {
 	}
 
 	@Test
-	void repeatedWaterLayersRemainOrderedUntilFiveLayerLimit() {
+	void repeatedWaterLayersMergeAndAccumulateXaeroOpacity() {
 		List<MapTile.Overlay> overlays = new ArrayList<>();
-		MapTile.Overlay water = new MapTile.Overlay(7, 0.66F, (byte) 12, false);
+		MapTile.Overlay water = new MapTile.Overlay(7, 0.66F, (byte) 12, false, 1);
 		for (int depth = 0; depth < 6; depth++) MapTileDebugRenderer.appendOverlay(overlays, water);
 
-		assertEquals(5, overlays.size());
-		assertEquals(List.of(water, water, water, water, water), overlays);
+		assertEquals(1, overlays.size());
+		assertEquals(6, overlays.get(0).opacity());
+	}
+
+	@Test
+	void xaeroSurfaceClassificationKeepsGrassLeavesAndLavaAsBases() {
+		SharedConstants.tryDetectVersion();
+		Bootstrap.bootStrap();
+		assertTrue(MapTileDebugRenderer.isAlwaysInvisible(Blocks.GRASS.defaultBlockState()));
+		assertFalse(MapTileDebugRenderer.isAlwaysInvisible(Blocks.GRASS_BLOCK.defaultBlockState()));
+		assertTrue(MapTileDebugRenderer.isOverlay(Blocks.GLASS.defaultBlockState()));
+		assertTrue(MapTileDebugRenderer.isOverlay(Blocks.ICE.defaultBlockState()));
+		assertFalse(MapTileDebugRenderer.isOverlay(Blocks.OAK_LEAVES.defaultBlockState()));
+		assertTrue(MapTileDebugRenderer.isFluidOverlay(Blocks.WATER.defaultBlockState()));
+		assertFalse(MapTileDebugRenderer.isFluidOverlay(Blocks.LAVA.defaultBlockState()));
 	}
 
 	@Test

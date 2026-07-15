@@ -101,6 +101,7 @@ public final class SharedMapServer {
 			ACCESS.load(server);
 		});
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+			TRANSFERS.clear();
 			TILE_DATA.stop();
 			WAYPOINTS.save(server);
 			EXPLORED_CHUNKS.save(server);
@@ -111,6 +112,7 @@ public final class SharedMapServer {
 			CLIENT_TEAMS.clear();
 		});
 		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+			TRANSFERS.cancelPlayer(handler.player.getUUID());
 			CLIENTS.remove(handler.player.getUUID());
 			CLIENT_TEAMS.remove(handler.player.getUUID());
 		});

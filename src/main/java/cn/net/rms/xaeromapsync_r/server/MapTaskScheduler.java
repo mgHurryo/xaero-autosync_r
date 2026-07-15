@@ -1,10 +1,15 @@
 package cn.net.rms.xaeromapsync_r.server;
 
+import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 import cn.net.rms.xaeromapsync_r.config.SharedMapConfig;
 import cn.net.rms.xaeromapsync_r.map.MapTile;
 import cn.net.rms.xaeromapsync_r.map.MapTileDebugRenderer;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexStore;
 import cn.net.rms.xaeromapsync_r.map.MapTileDataStore;
+import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
+import cn.net.rms.xaeromapsync_r.network.SharedMapNetworking;
+import cn.net.rms.xaeromapsync_r.network.CompressionCodec;
+import cn.net.rms.xaeromapsync_r.network.TileDataPayload;
 import cn.net.rms.xaeromapsync_r.server.dirty.DirtyChunkProcessor;
 import cn.net.rms.xaeromapsync_r.server.dirty.DirtyChunkStore;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
@@ -27,13 +32,14 @@ public final class MapTaskScheduler {
 	private final RegionActivityStore activity;
 	private MinecraftServer activeServer;
 	private long tickStartedNanos;
+	private long lastTickNanos;
+	private long lastMapWorkNanos;
 	private double averageMspt;
 	private final double[] msptSamples = new double[SAMPLE_WINDOW];
 	private int sampleCursor;
 	private int sampleCount;
 	private double lastMspt;
 	private double lastTaskMillis;
-	private long completedTiles;
 	private boolean paused;
 	private boolean drainRequested;
 
@@ -51,13 +57,11 @@ public final class MapTaskScheduler {
 	}
 
 	private void endTick(MinecraftServer server) {
-		double elapsedMillis = (System.nanoTime() - tickStartedNanos) / 1_000_000.0D;
-		lastMspt = elapsedMillis;
-		msptSamples[sampleCursor] = elapsedMillis;
-		sampleCursor = (sampleCursor + 1) % SAMPLE_WINDOW;
-		sampleCount = Math.min(SAMPLE_WINDOW, sampleCount + 1);
-		averageMspt = averageMspt == 0.0D ? elapsedMillis : averageMspt + EWMA_ALPHA * (elapsedMillis - averageMspt);
+		long elapsedBeforeMapWork = System.nanoTime() - tickStartedNanos;
 		if (paused || SharedMapConfig.highLoadPause() && averageMspt >= SharedMapConfig.highLoadMsptThreshold()) {
+			lastMapWorkNanos = 0L;
+			lastTaskMillis = 0.0D;
+			recordCompletedTick(elapsedBeforeMapWork);
 			return;
 		}
 		activeServer = server;
@@ -66,17 +70,53 @@ public final class MapTaskScheduler {
 			int configuredBudget = drainRequested
 					? SharedMapConfig.dirtyDrainBudgetPerTick()
 					: SharedMapConfig.dirtyChunksPerTick();
-			int renderLimit = Math.max(configuredBudget, SharedMapConfig.maxTileRendersPerTick());
+			int renderLimit = renderLimit(configuredBudget, SharedMapConfig.maxTileRendersPerTick());
 			int scanBudget = Math.max(renderLimit, SharedMapConfig.dirtyChunkScanPerTick());
-			long deadlineNanos = taskStartedNanos + SharedMapConfig.mapRenderBudgetMillis() * 1_000_000L;
-			DirtyChunkProcessor.TickResult result = processor.processTick(renderLimit, scanBudget,
-					() -> System.nanoTime() < deadlineNanos);
-			completedTiles += result.completed();
+			long workBudgetNanos = adaptiveMapWorkBudgetNanos(
+					elapsedBeforeMapWork,
+					lastTickNanos,
+					lastMapWorkNanos,
+					SharedMapConfig.highLoadMsptThreshold() * 1_000_000L,
+					SharedMapConfig.mapRenderBudgetMillis() * 1_000_000L);
+			if (renderLimit > 0 && workBudgetNanos > 0L) {
+				long deadlineNanos = taskStartedNanos + workBudgetNanos;
+				processor.processTick(renderLimit, scanBudget, () -> System.nanoTime() < deadlineNanos);
+			}
 			drainRequested = false;
 		} finally {
-			lastTaskMillis = (System.nanoTime() - taskStartedNanos) / 1_000_000.0D;
+			lastMapWorkNanos = System.nanoTime() - taskStartedNanos;
+			lastTaskMillis = lastMapWorkNanos / 1_000_000.0D;
 			activeServer = null;
+			recordCompletedTick(System.nanoTime() - tickStartedNanos);
 		}
+	}
+
+	private void recordCompletedTick(long elapsedNanos) {
+		lastTickNanos = Math.max(0L, elapsedNanos);
+		double elapsedMillis = lastTickNanos / 1_000_000.0D;
+		lastMspt = elapsedMillis;
+		msptSamples[sampleCursor] = elapsedMillis;
+		sampleCursor = (sampleCursor + 1) % SAMPLE_WINDOW;
+		sampleCount = Math.min(SAMPLE_WINDOW, sampleCount + 1);
+		averageMspt = averageMspt == 0.0D ? elapsedMillis : averageMspt + EWMA_ALPHA * (elapsedMillis - averageMspt);
+	}
+
+	static int renderLimit(int configuredLimit, int safetyLimit) {
+		return Math.max(0, Math.min(configuredLimit, safetyLimit));
+	}
+
+	static long adaptiveMapWorkBudgetNanos(long currentTickElapsedNanos, long previousTickNanos,
+			long previousMapWorkNanos, long targetTickNanos, long configuredBudgetNanos) {
+		long currentRemaining = remainingNanos(targetTickNanos, currentTickElapsedNanos);
+		long configured = Math.max(0L, configuredBudgetNanos);
+		if (previousTickNanos <= 0L) return Math.min(configured, currentRemaining);
+		long previousBaseWork = Math.max(0L, previousTickNanos - Math.max(0L, previousMapWorkNanos));
+		long previousRemaining = remainingNanos(targetTickNanos, previousBaseWork);
+		return Math.min(configured, Math.min(currentRemaining, previousRemaining));
+	}
+
+	private static long remainingNanos(long targetNanos, long elapsedNanos) {
+		return Math.max(0L, targetNanos - Math.max(0L, elapsedNanos));
 	}
 
 	private boolean isLoaded(DirtyChunkStore.StableDirtyChunk chunk) {
@@ -98,7 +138,56 @@ public final class MapTaskScheduler {
 		if (tile == null) {
 			return false;
 		}
-		return persistThenIndex(tile, tileData, mapTiles);
+		byte[] surfacePayload;
+		try {
+			surfacePayload = CompressionCodec.encodeSurface(CompressionCodec.MapTileSurfaceData.fromTile(tile),
+					SharedMapConfig.compression());
+			// Validate the final wire payload limit before durable publication. A tile
+			// that clients can never receive must remain dirty and retryable.
+			new TileDataPayload(tile, 0L, SharedMapConfig.compression(), surfacePayload);
+		} catch (RuntimeException exception) {
+			XaeroMapsync_r.LOGGER.warn("Rejected untransmittable map tile {} {} {}",
+					tile.dimension(), tile.chunkX(), tile.chunkZ(), exception);
+			return false;
+		}
+		MinecraftServer server = activeServer;
+		return tileData.putAsynchronously(tile, successful -> {
+			if (!successful) {
+				server.execute(() -> processor.completeRecalculation(chunk, false));
+				return;
+			}
+			server.execute(() -> publishPersistedTile(server, chunk, tile, surfacePayload));
+		});
+	}
+
+	private void publishPersistedTile(MinecraftServer server, DirtyChunkStore.StableDirtyChunk chunk, MapTile tile,
+			byte[] surfacePayload) {
+		if (!dirtyChunks.isCurrentClaim(chunk)) {
+			processor.completeRecalculation(chunk, true);
+			return;
+		}
+		MapTileIndexEntry previous;
+		MapTileIndexEntry entry;
+		try {
+			previous = mapTiles.find(tile.dimension(), tile.chunkX(), tile.chunkZ()).orElse(null);
+			entry = mapTiles.upsert(tile);
+		} catch (RuntimeException exception) {
+			XaeroMapsync_r.LOGGER.warn("Failed to publish persisted tile index for {} {} {}",
+					tile.dimension(), tile.chunkX(), tile.chunkZ(), exception);
+			processor.completeRecalculation(chunk, false);
+			return;
+		}
+		if (processor.completeRecalculation(chunk, true) != DirtyChunkProcessor.CompletionResult.COMPLETED) {
+			return;
+		}
+		if (previous == null || previous.revision() != entry.revision()) {
+			try {
+				SharedMapNetworking.broadcastTileData(server, tile, entry, surfacePayload);
+			} catch (RuntimeException exception) {
+				XaeroMapsync_r.LOGGER.warn("Failed to broadcast published tile {} {} {}",
+						tile.dimension(), tile.chunkX(), tile.chunkZ(), exception);
+			}
+		}
 	}
 
 	static boolean persistThenIndex(MapTile tile, MapTileDataStore tileData, MapTileIndexStore mapTiles) {
@@ -123,7 +212,7 @@ public final class MapTaskScheduler {
 	public synchronized double averageMspt() { return averageMspt; }
 	public synchronized double lastMspt() { return lastMspt; }
 	public synchronized double lastTaskMillis() { return lastTaskMillis; }
-	public synchronized long completedTiles() { return completedTiles; }
+	public long completedTiles() { return processor.statistics().completed(); }
 	public synchronized double p95Mspt() {
 		if (sampleCount == 0) return 0.0D;
 		double[] copy = java.util.Arrays.copyOf(msptSamples, sampleCount);

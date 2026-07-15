@@ -1,96 +1,151 @@
 package cn.net.rms.xaeromapsync_r.client;
 
+import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 import cn.net.rms.xaeromapsync_r.map.MapTile;
+import cn.net.rms.xaeromapsync_r.map.MapTileDataStore;
+import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import net.minecraft.world.level.ChunkPos;
-import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-import java.util.Properties;
 
 public final class ClientMapTileCache {
-	private final Map<String, CachedTile> tiles = new LinkedHashMap<>();
-	private Path persistencePath;
-	private boolean dirty;
+	private final Map<String, Long> appliedRevisions = new LinkedHashMap<>();
+	private final Map<String, Long> cachedHashes = new LinkedHashMap<>();
+	private final Map<String, Long> cachedRevisions = new LinkedHashMap<>();
+	private final Map<String, PendingCacheWrite> pendingWrites = new LinkedHashMap<>();
+	private final MapTileDataStore tileBodies = new MapTileDataStore();
+	private ExecutorService readers;
+	private ScheduledExecutorService retries;
 
-	public synchronized boolean hasRevision(String dimension, int chunkX, int chunkZ, long revision) {
-		CachedTile tile = tiles.get(key(dimension, chunkX, chunkZ));
-		return tile != null && tile.revision >= revision;
+	public synchronized void start(Path root) {
+		if (readers != null) return;
+		tileBodies.start(root);
+		readers = Executors.newFixedThreadPool(2, runnable -> {
+			Thread thread = new Thread(runnable, "xaero-mapsync-client-cache-reader");
+			thread.setDaemon(true);
+			return thread;
+		});
+		retries = Executors.newSingleThreadScheduledExecutor(runnable -> {
+			Thread thread = new Thread(runnable, "xaero-mapsync-client-cache-retry");
+			thread.setDaemon(true);
+			return thread;
+		});
 	}
 
-	public synchronized void put(MapTile tile, long revision) {
+	public synchronized boolean hasRevision(String dimension, int chunkX, int chunkZ, long revision) {
+		return appliedRevisions.getOrDefault(key(dimension, chunkX, chunkZ), -1L) >= revision;
+	}
+
+	public synchronized long appliedRevision(String dimension, int chunkX, int chunkZ) {
+		return appliedRevisions.getOrDefault(key(dimension, chunkX, chunkZ), -1L);
+	}
+
+	public synchronized void markApplied(MapTile tile, long revision) {
 		String key = key(tile.dimension(), tile.chunkX(), tile.chunkZ());
-		CachedTile current = tiles.get(key);
-		if (current != null && current.revision > revision) return;
-		tiles.put(key, new CachedTile(tile, revision, tile.dimension(), tile.chunkX(), tile.chunkZ()));
-		dirty = true;
+		long current = appliedRevisions.getOrDefault(key, -1L);
+		if (revision >= current) appliedRevisions.put(key, revision);
+	}
+
+	public void cache(MapTile tile, long revision) {
+		String key = key(tile.dimension(), tile.chunkX(), tile.chunkZ());
+		synchronized (this) {
+			long cachedRevision = cachedRevisions.getOrDefault(key, -1L);
+			if (revision < cachedRevision) return;
+			Long cachedHash = cachedHashes.get(key);
+			if (revision == cachedRevision && cachedHash != null && cachedHash == tile.contentHash()) return;
+			cachedRevisions.put(key, revision);
+			cachedHashes.put(key, tile.contentHash());
+		}
+		PendingCacheWrite pending = new PendingCacheWrite(tile, revision, 0);
+		synchronized (this) { pendingWrites.put(key, pending); }
+		attemptCacheWrite(key, pending);
+	}
+
+	private void attemptCacheWrite(String key, PendingCacheWrite pending) {
+		synchronized (this) {
+			if (pendingWrites.get(key) != pending || retries == null) return;
+		}
+		boolean accepted = tileBodies.putAsynchronously(pending.tile, successful -> {
+			if (successful) {
+				synchronized (ClientMapTileCache.this) {
+					if (pendingWrites.get(key) == pending) pendingWrites.remove(key);
+				}
+				return;
+			}
+			scheduleCacheRetry(key, pending);
+		});
+		if (!accepted) scheduleCacheRetry(key, pending);
+	}
+
+	private void scheduleCacheRetry(String key, PendingCacheWrite failed) {
+		ScheduledExecutorService activeRetries;
+		PendingCacheWrite retry = new PendingCacheWrite(failed.tile, failed.revision, failed.attempts + 1);
+		synchronized (this) {
+			if (pendingWrites.get(key) != failed) return;
+			pendingWrites.put(key, retry);
+			activeRetries = retries;
+		}
+		if (activeRetries == null) return;
+		long delayMillis = Math.min(5_000L, 100L << Math.min(retry.attempts, 5));
+		activeRetries.schedule(() -> attemptCacheWrite(key, retry), delayMillis, TimeUnit.MILLISECONDS);
+	}
+
+	public CompletableFuture<Optional<MapTile>> findCached(MapTileIndexEntry entry) {
+		ExecutorService activeReaders;
+		synchronized (this) {
+			activeReaders = readers;
+		}
+		if (activeReaders == null) return CompletableFuture.completedFuture(Optional.empty());
+		return CompletableFuture.supplyAsync(() -> {
+			Optional<MapTile> cached = tileBodies.find(entry.dimension(), entry.chunkX(), entry.chunkZ())
+					.filter(tile -> tile.contentHash() == entry.contentHash());
+			cached.ifPresent(tile -> {
+				synchronized (ClientMapTileCache.this) {
+					cachedHashes.put(key(tile.dimension(), tile.chunkX(), tile.chunkZ()), tile.contentHash());
+				}
+			});
+			return cached;
+		}, activeReaders).exceptionally(exception -> {
+			XaeroMapsync_r.LOGGER.warn("Failed to read cached client map tile {} {} {}", entry.dimension(),
+					entry.chunkX(), entry.chunkZ(), exception);
+			return Optional.empty();
+		});
+	}
+
+	/** Applied revisions only prove injection into the current Xaero session. */
+	public synchronized void clearSession() {
+		appliedRevisions.clear();
 	}
 
 	public synchronized int totalCount() {
-		return tiles.size();
+		return appliedRevisions.size();
 	}
 
-	public synchronized void load(Path path) {
-		persistencePath = path;
-		if (!Files.isRegularFile(path)) return;
-		Properties values = new Properties();
-		try (InputStream input = Files.newInputStream(path)) {
-			values.load(input);
-			for (String encodedKey : values.stringPropertyNames()) {
-				String[] parts = encodedKey.split(",", 3);
-				if (parts.length != 3) continue;
-				String dimension = new String(Base64.getUrlDecoder().decode(parts[0]), StandardCharsets.UTF_8);
-				int chunkX = Integer.parseInt(parts[1]);
-				int chunkZ = Integer.parseInt(parts[2]);
-				long revision = Long.parseLong(values.getProperty(encodedKey));
-				tiles.put(key(dimension, chunkX, chunkZ), new CachedTile(null, revision, dimension, chunkX, chunkZ));
-			}
-		} catch (IOException | RuntimeException exception) {
-			XaeroMapsync_r.LOGGER.warn("Failed to load client tile revisions at {}", path, exception);
+	public void stop() {
+		ExecutorService activeReaders;
+		ScheduledExecutorService activeRetries;
+		synchronized (this) {
+			activeReaders = readers;
+			readers = null;
+			activeRetries = retries;
+			retries = null;
+			pendingWrites.clear();
 		}
+		if (activeReaders != null) activeReaders.shutdownNow();
+		if (activeRetries != null) activeRetries.shutdownNow();
+		tileBodies.stop();
 	}
 
-	public synchronized void saveIfDirty() {
-		if (!dirty || persistencePath == null) return;
-		Properties values = new Properties();
-		for (CachedTile tile : tiles.values()) {
-			String dimension = Base64.getUrlEncoder().withoutPadding().encodeToString(tile.dimension.getBytes(StandardCharsets.UTF_8));
-			values.setProperty(dimension + "," + tile.chunkX + "," + tile.chunkZ, Long.toString(tile.revision));
-		}
-		Path temp = persistencePath.resolveSibling(persistencePath.getFileName() + ".tmp");
-		try {
-			Files.createDirectories(persistencePath.getParent());
-			try (OutputStream output = Files.newOutputStream(temp)) { values.store(output, "Xaero Map Sync applied revisions"); }
-			SharedMapClient.replaceFile(temp, persistencePath);
-			dirty = false;
-		} catch (IOException exception) {
-			XaeroMapsync_r.LOGGER.warn("Failed to save client tile revisions at {}", persistencePath, exception);
-		}
-	}
+	private record PendingCacheWrite(MapTile tile, long revision, int attempts) {}
 
 	private static String key(String dimension, int chunkX, int chunkZ) {
 		return dimension + ":" + ChunkPos.asLong(chunkX, chunkZ);
-	}
-
-	private static final class CachedTile {
-		private final MapTile tile;
-		private final long revision;
-		private final String dimension;
-		private final int chunkX;
-		private final int chunkZ;
-
-		private CachedTile(MapTile tile, long revision, String dimension, int chunkX, int chunkZ) {
-			this.tile = tile;
-			this.revision = revision;
-			this.dimension = dimension;
-			this.chunkX = chunkX;
-			this.chunkZ = chunkZ;
-		}
 	}
 }

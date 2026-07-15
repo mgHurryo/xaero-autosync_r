@@ -60,7 +60,10 @@ public final class ServerTransferManager {
 		while (players.hasNext()) {
 			Map.Entry<UUID, LinkedHashMap<UUID, PendingTransfer>> playerEntry = players.next();
 			ServerPlayer player = server.getPlayerList().getPlayer(playerEntry.getKey());
-			if (player == null) continue;
+			if (player == null) {
+				players.remove();
+				continue;
+			}
 			Iterator<PendingTransfer> pendingIterator = playerEntry.getValue().values().iterator();
 			while (pendingIterator.hasNext()) {
 				PendingTransfer pending = pendingIterator.next();
@@ -87,6 +90,14 @@ public final class ServerTransferManager {
 
 	public synchronized int pendingCount() {
 		return transfers.values().stream().mapToInt(Map::size).sum();
+	}
+
+	public synchronized void cancelPlayer(UUID playerId) {
+		transfers.remove(playerId);
+	}
+
+	public synchronized void clear() {
+		transfers.clear();
 	}
 
 	private static final class PendingTransfer {

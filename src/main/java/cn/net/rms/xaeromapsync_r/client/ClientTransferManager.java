@@ -56,6 +56,8 @@ public final class ClientTransferManager {
 
 	public synchronized int activeCount() { return assemblers.size(); }
 
+	public synchronized void clear() { assemblers.clear(); }
+
 	public synchronized void tick(long nowMillis) {
 		assemblers.entrySet().removeIf(entry -> entry.getValue().checkTimeout(nowMillis) == TransferAssembler.Status.TIMED_OUT);
 	}

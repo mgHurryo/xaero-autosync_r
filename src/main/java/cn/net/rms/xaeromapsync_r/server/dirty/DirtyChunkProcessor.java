@@ -42,15 +42,15 @@ public final class DirtyChunkProcessor {
 		if (renderBudget == 0 || scanBudget == 0) {
 			return recordResult(renderBudget, List.of(), 0, 0, 0, 0);
 		}
-		List<DirtyChunkStore.StableDirtyChunk> chunks = store.claimStableDirtyChunks(scanBudget);
-		int completedThisTick = 0;
+		List<DirtyChunkStore.StableDirtyChunk> chunks = store.claimStableDirtyChunks(scanBudget, scanBudget);
+		int submittedThisTick = 0;
 		int deferredThisTick = 0;
 		int failedThisTick = 0;
 		int staleThisTick = 0;
 		int renderAttempts = 0;
 
 		for (DirtyChunkStore.StableDirtyChunk chunk : chunks) {
-			if (renderAttempts >= renderBudget || renderAttempts > 0 && !canContinueRendering.getAsBoolean()) {
+			if (renderAttempts >= renderBudget || !canContinueRendering.getAsBoolean()) {
 				if (store.defer(chunk)) {
 					deferredThisTick++;
 				} else {
@@ -63,7 +63,7 @@ public final class DirtyChunkProcessor {
 				loaded = loadedChunkProbe.isLoaded(chunk);
 			} catch (RuntimeException exception) {
 				logFailure("check loaded state for", chunk, exception);
-				if (store.defer(chunk)) {
+				if (finish(chunk, false, false) == CompletionResult.RETAINED) {
 					failedThisTick++;
 				} else {
 					staleThisTick++;
@@ -80,34 +80,55 @@ public final class DirtyChunkProcessor {
 			}
 
 			renderAttempts++;
-			boolean successful;
+			boolean submitted;
 			try {
-				successful = recalculator.recalculate(chunk);
+				submitted = recalculator.recalculate(chunk);
 			} catch (RuntimeException exception) {
 				logFailure("recalculate", chunk, exception);
-				successful = false;
+				submitted = false;
 			}
-			if (successful && store.confirmProcessed(chunk)) {
-				completedThisTick++;
-			} else if (store.defer(chunk)) {
+			if (submitted) {
+				submittedThisTick++;
+			} else if (finish(chunk, false, false) == CompletionResult.RETAINED) {
 				failedThisTick++;
 			} else {
 				staleThisTick++;
 			}
 		}
 
-		return recordResult(renderBudget, chunks, completedThisTick, deferredThisTick, failedThisTick, staleThisTick);
+		return recordResult(renderBudget, chunks, submittedThisTick, deferredThisTick, failedThisTick, staleThisTick);
 	}
 
 	private TickResult recordResult(int renderBudget, List<DirtyChunkStore.StableDirtyChunk> chunks,
-			int completedThisTick, int deferredThisTick, int failedThisTick, int staleThisTick) {
+			int submittedThisTick, int deferredThisTick, int failedThisTick, int staleThisTick) {
 		ticks++;
 		claimed += chunks.size();
-		completed += completedThisTick;
 		deferred += deferredThisTick;
 		failed += failedThisTick;
 		stale += staleThisTick;
-		return new TickResult(renderBudget, chunks.size(), completedThisTick, deferredThisTick, failedThisTick, staleThisTick);
+		return new TickResult(renderBudget, chunks.size(), submittedThisTick, deferredThisTick, failedThisTick, staleThisTick);
+	}
+
+	/** Completes an accepted recalculation after its durable tile write and index publication finish. */
+	public synchronized CompletionResult completeRecalculation(DirtyChunkStore.StableDirtyChunk chunk, boolean successful) {
+		return finish(chunk, successful, true);
+	}
+
+	private CompletionResult finish(DirtyChunkStore.StableDirtyChunk chunk, boolean successful, boolean recordStatistics) {
+		CompletionResult result;
+		if (successful && store.confirmProcessed(chunk)) {
+			result = CompletionResult.COMPLETED;
+		} else if (!successful && store.defer(chunk)) {
+			result = CompletionResult.RETAINED;
+		} else {
+			result = CompletionResult.STALE;
+		}
+		if (recordStatistics) {
+			if (result == CompletionResult.COMPLETED) completed++;
+			else if (result == CompletionResult.RETAINED) failed++;
+			else stale++;
+		}
+		return result;
 	}
 
 	public synchronized Statistics statistics() {
@@ -129,7 +150,13 @@ public final class DirtyChunkProcessor {
 		boolean recalculate(DirtyChunkStore.StableDirtyChunk chunk);
 	}
 
-	public record TickResult(int budget, int claimed, int completed, int deferred, int failed, int stale) {
+	public enum CompletionResult {
+		COMPLETED,
+		RETAINED,
+		STALE
+	}
+
+	public record TickResult(int budget, int claimed, int submitted, int deferred, int failed, int stale) {
 	}
 
 	public record Statistics(long ticks, long claimed, long completed, long deferred, long failed, long stale) {

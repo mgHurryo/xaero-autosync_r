@@ -14,6 +14,9 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.zip.DeflaterOutputStream;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -21,8 +24,8 @@ public final class MapTileDataStoreTest {
 	@TempDir Path tempDir;
 
 	@Test
-	void v3CacheUsesIndependentDirectory() {
-		assertEquals("tiles-v3", MapTileDataStore.CACHE_DIRECTORY);
+	void v5CacheUsesIndependentDirectory() {
+		assertEquals("tiles-v5", MapTileDataStore.CACHE_DIRECTORY);
 	}
 
 	@Test
@@ -41,7 +44,7 @@ public final class MapTileDataStoreTest {
 		assertArrayEquals(tile.baseStateIds(), loaded.baseStateIds());
 		assertArrayEquals(tile.baseHeights(), loaded.baseHeights());
 		assertArrayEquals(tile.topHeights(), loaded.topHeights());
-		assertArrayEquals(tile.biomeIds(), loaded.biomeIds());
+		assertArrayEquals(tile.biomeKeys(), loaded.biomeKeys());
 		assertArrayEquals(tile.lightAbove(), loaded.lightAbove());
 		assertArrayEquals(tile.glowing(), loaded.glowing());
 		assertArrayEquals(tile.cave(), loaded.cave());
@@ -58,6 +61,44 @@ public final class MapTileDataStoreTest {
 
 		assertFalse(store.putSynchronously(tile("minecraft:overworld", 1, 2, 20)));
 		assertTrue(store.find("minecraft:overworld", 1, 2).isEmpty());
+		store.stop();
+	}
+
+	@Test
+	void asynchronousWritePublishesOnlyAfterAtomicPersistence() throws Exception {
+		MapTile tile = tile("minecraft:overworld", 8, -3, 30);
+		MapTileDataStore store = new MapTileDataStore();
+		store.start(tempDir);
+		CountDownLatch completed = new CountDownLatch(1);
+		AtomicBoolean successful = new AtomicBoolean();
+
+		assertTrue(store.putAsynchronously(tile, result -> {
+			successful.set(result);
+			completed.countDown();
+		}));
+		assertTrue(completed.await(5, TimeUnit.SECONDS));
+		assertTrue(successful.get());
+		assertEquals(tile.contentHash(), store.find(tile.dimension(), tile.chunkX(), tile.chunkZ()).orElseThrow().contentHash());
+		store.stop();
+	}
+
+	@Test
+	void asynchronousWriteFailureDoesNotPublishMemoryTile() throws Exception {
+		Path blockedRoot = tempDir.resolve("async-blocked-root");
+		Files.writeString(blockedRoot, "not a directory");
+		MapTile tile = tile("minecraft:overworld", 9, -4, 40);
+		MapTileDataStore store = new MapTileDataStore();
+		store.start(blockedRoot);
+		CountDownLatch completed = new CountDownLatch(1);
+		AtomicBoolean successful = new AtomicBoolean(true);
+
+		assertTrue(store.putAsynchronously(tile, result -> {
+			successful.set(result);
+			completed.countDown();
+		}));
+		assertTrue(completed.await(5, TimeUnit.SECONDS));
+		assertFalse(successful.get());
+		assertTrue(store.find(tile.dimension(), tile.chunkX(), tile.chunkZ()).isEmpty());
 		store.stop();
 	}
 
@@ -114,7 +155,7 @@ public final class MapTileDataStoreTest {
 			glowing[index] = index % 31 == 0;
 			cave[index] = index % 17 == 0;
 			overlays.add(index % 7 == 0
-					? List.of(new MapTile.Overlay(offset + 3000 + index, 0.66F, (byte) ((index + 1) % 16), false))
+					? List.of(new MapTile.Overlay(offset + 3000 + index, 0.66F, (byte) ((index + 1) % 16), false, 2))
 					: List.of());
 		}
 		long hash = MapTileHasher.hashSurface(baseStates, baseHeights, topHeights, biomes, lights, glowing, cave, overlays);

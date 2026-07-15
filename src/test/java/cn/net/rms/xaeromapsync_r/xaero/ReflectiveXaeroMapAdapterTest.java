@@ -43,6 +43,17 @@ final class ReflectiveXaeroMapAdapterTest {
 	}
 
 	@Test
+	void terminalRegionStatesAreRequeuedEvenWithStaleReloadFlag() {
+		assertTrue(ReflectiveXaeroMapAdapter.shouldRequestRegionLoad((byte) 0, true, false, false));
+		assertTrue(ReflectiveXaeroMapAdapter.shouldRequestRegionLoad((byte) 4, true, false, false));
+		assertFalse(ReflectiveXaeroMapAdapter.shouldRequestRegionLoad((byte) 0, true, true, false));
+		assertFalse(ReflectiveXaeroMapAdapter.shouldRequestRegionLoad((byte) 4, false, false, true));
+		assertFalse(ReflectiveXaeroMapAdapter.shouldRequestRegionLoad((byte) 1, false, false, false));
+		assertFalse(ReflectiveXaeroMapAdapter.shouldRequestRegionLoad((byte) 2, false, false, false));
+		assertFalse(ReflectiveXaeroMapAdapter.shouldRequestRegionLoad((byte) 3, false, false, false));
+	}
+
+	@Test
 	void inactiveDimensionIsNotAnAdapterFailure() {
 		assertFalse(ReflectiveXaeroMapAdapter.isCurrentDimension("minecraft:the_nether", "minecraft:overworld"));
 		assertTrue(ReflectiveXaeroMapAdapter.isCurrentDimension("minecraft:overworld", "minecraft:overworld"));
@@ -66,9 +77,19 @@ final class ReflectiveXaeroMapAdapterTest {
 		ClassSignature region = readClassSignature("xaero/map/region/MapRegion.class");
 
 		assertEquals("(Ljava/lang/Runnable;)V", signature.methodDescriptor("waitForLoadingToFinish"));
+		assertEquals("(II)Lxaero/map/region/MapTile;", signature.methodDescriptor("getMapTile"));
 		assertTrue(saveLoad.hasMethodDescriptor("requestLoad", "(Lxaero/map/region/MapRegion;Ljava/lang/String;)V"));
+		assertEquals("Ljava/util/ArrayList;", saveLoad.fieldDescriptor("toLoad"));
 		assertEquals("(Lxaero/map/region/LeveledRegion;)Z", saveLoad.methodDescriptor("toCacheContains"));
+		assertEquals("(Lxaero/map/region/LeveledRegion;)V", saveLoad.methodDescriptor("requestCache"));
 		assertEquals("()Z", region.methodDescriptor("isWritingPaused"));
+		ClassSignature leveledRegion = readClassSignature("xaero/map/region/LeveledRegion.class");
+		assertEquals("()Z", leveledRegion.methodDescriptor("recacheHasBeenRequested"));
+		ClassSignature tile = readClassSignature("xaero/map/region/MapTile.class");
+		assertEquals("()Z", tile.methodDescriptor("isLoaded"));
+		assertEquals("()Z", tile.methodDescriptor("wasWrittenOnce"));
+		ClassSignature core = readClassSignature("xaero/map/core/XaeroWorldMapCore.class");
+		assertEquals("Ljava/lang/reflect/Field;", core.fieldDescriptor("chunkCleanField"));
 	}
 
 	@Test
@@ -88,6 +109,7 @@ final class ReflectiveXaeroMapAdapterTest {
 		ClassSignature mapBlock = readClassSignature("xaero/map/region/MapBlock.class");
 
 		assertEquals("(Lnet/minecraft/class_2680;FBZ)V", overlay.methodDescriptor("<init>"));
+		assertEquals("(I)V", overlay.methodDescriptor("increaseOpacity"));
 		assertEquals("(Lxaero/map/region/Overlay;)V", mapBlock.methodDescriptor("addOverlay"));
 		assertEquals("(Lnet/minecraft/class_2680;IILxaero/map/biome/BiomeKey;BZZ)V",
 				mapBlock.methodDescriptor("write"));
@@ -147,6 +169,16 @@ final class ReflectiveXaeroMapAdapterTest {
 		});
 
 		assertFalse(adapter.apply(tile(256)));
+		assertTrue(adapter.isAvailable());
+	}
+
+	@Test
+	void inactiveDimensionBatchRemainsAvailableForRetry() {
+		ReflectiveXaeroMapAdapter adapter = new ReflectiveXaeroMapAdapter(tile -> {
+			throw new IllegalStateException("Xaero map tile dimension is not loaded yet: minecraft:the_nether");
+		});
+
+		assertEquals(XaeroMapAdapter.ApplyResult.RETRY_LATER, adapter.applyBatchResult(java.util.List.of(tile(256))));
 		assertTrue(adapter.isAvailable());
 	}
 

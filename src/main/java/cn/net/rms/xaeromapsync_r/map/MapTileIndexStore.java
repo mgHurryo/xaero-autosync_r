@@ -23,7 +23,7 @@ import net.minecraft.world.level.storage.LevelResource;
 
 public final class MapTileIndexStore {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-	static final String INDEX_FILE_NAME = "map_tile_index-v3.json";
+	static final String INDEX_FILE_NAME = "map_tile_index-v5.json";
 	private final Map<String, MapTileIndexEntry> tiles = new LinkedHashMap<>();
 	private long nextRevision = 1L;
 	private int surfaceSamplerVersion = MapTileDebugRenderer.SURFACE_SAMPLER_VERSION;

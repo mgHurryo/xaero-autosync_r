@@ -96,8 +96,8 @@ final class MapTileIndexStoreTest {
 	}
 
 	@Test
-	void v3IndexUsesIndependentFileName() {
-		assertEquals("map_tile_index-v3.json", MapTileIndexStore.INDEX_FILE_NAME);
+	void v5IndexUsesIndependentFileName() {
+		assertEquals("map_tile_index-v5.json", MapTileIndexStore.INDEX_FILE_NAME);
 	}
 
 	private static MapTile tile(String dimension, int chunkX, int chunkZ, long contentHash) {

@@ -19,6 +19,12 @@ public final class SharedMapConfig {
 	public static void register() {
 		Path path = FabricLoader.getInstance().getConfigDir().resolve(FILE_NAME);
 		load(path);
+		migrateDefault("tasks.dirty_chunks_per_tick", "1", "16");
+		migrateDefault("tasks.dirty_chunk_scan_per_tick", "64", "512");
+		migrateDefault("tasks.dirty_drain_budget_per_tick", "4", "16");
+		migrateDefault("tasks.max_tile_renders_per_tick", "8", "16");
+		migrateDefault("tasks.map_render_budget_ms", "10", "25");
+		VALUES.setProperty("protocol.version", Integer.toString(SharedMapProtocolDefaults.PROTOCOL_VERSION));
 		VALUES.setProperty("map.format.version", Integer.toString(SharedMapProtocolDefaults.MAP_FORMAT_VERSION));
 		save(path);
 	}
@@ -60,23 +66,23 @@ public final class SharedMapConfig {
 	}
 
 	public static int dirtyChunksPerTick() {
-		return intValue("tasks.dirty_chunks_per_tick", 1);
+		return intValue("tasks.dirty_chunks_per_tick", 16);
 	}
 
 	public static int dirtyChunkScanPerTick() {
-		return positiveIntValue("tasks.dirty_chunk_scan_per_tick", 64);
+		return positiveIntValue("tasks.dirty_chunk_scan_per_tick", 512);
 	}
 
 	public static int dirtyDrainBudgetPerTick() {
-		return intValue("tasks.dirty_drain_budget_per_tick", 4);
+		return intValue("tasks.dirty_drain_budget_per_tick", 16);
 	}
 
 	public static int maxTileRendersPerTick() {
-		return positiveIntValue("tasks.max_tile_renders_per_tick", 8);
+		return positiveIntValue("tasks.max_tile_renders_per_tick", 16);
 	}
 
 	public static int mapRenderBudgetMillis() {
-		return positiveIntValue("tasks.map_render_budget_ms", 10);
+		return positiveIntValue("tasks.map_render_budget_ms", 25);
 	}
 
 	public static int stormBlockChangesThreshold() { return positiveIntValue("activity.storm_block_changes_per_tick", 4096); }
@@ -112,6 +118,10 @@ public final class SharedMapConfig {
 		} catch (IOException exception) {
 			XaeroMapsync_r.LOGGER.warn("Failed to save shared map config at {}", path, exception);
 		}
+	}
+
+	private static void migrateDefault(String key, String previousDefault, String currentDefault) {
+		if (previousDefault.equals(VALUES.getProperty(key))) VALUES.setProperty(key, currentDefault);
 	}
 
 	private static int intValue(String key, int fallback) {
@@ -152,11 +162,11 @@ public final class SharedMapConfig {
 		defaults.setProperty("tasks.normal_tick_budget_ms", "2");
 		defaults.setProperty("tasks.high_load_pause", "true");
 		defaults.setProperty("tasks.high_load_mspt_threshold", "45");
-		defaults.setProperty("tasks.dirty_chunks_per_tick", "1");
-		defaults.setProperty("tasks.dirty_chunk_scan_per_tick", "64");
-		defaults.setProperty("tasks.dirty_drain_budget_per_tick", "4");
-		defaults.setProperty("tasks.max_tile_renders_per_tick", "8");
-		defaults.setProperty("tasks.map_render_budget_ms", "10");
+		defaults.setProperty("tasks.dirty_chunks_per_tick", "16");
+		defaults.setProperty("tasks.dirty_chunk_scan_per_tick", "512");
+		defaults.setProperty("tasks.dirty_drain_budget_per_tick", "16");
+		defaults.setProperty("tasks.max_tile_renders_per_tick", "16");
+		defaults.setProperty("tasks.map_render_budget_ms", "25");
 		defaults.setProperty("activity.storm_block_changes_per_tick", "4096");
 		defaults.setProperty("activity.storm_dirty_chunks_per_tick", "16");
 		defaults.setProperty("activity.storm_tnt_entities_per_tick", "64");

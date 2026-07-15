@@ -21,18 +21,18 @@ public final class MapTileHasher {
 	}
 
 	public static long hashSurface(MapTile tile) {
-		return hashSurface(tile.baseStateIds(), tile.baseHeights(), tile.topHeights(), tile.biomeIds(), tile.lightAbove(),
+		return hashSurface(tile.baseStateIds(), tile.baseHeights(), tile.topHeights(), tile.biomeKeys(), tile.lightAbove(),
 				tile.glowing(), tile.cave(), tile.overlays());
 	}
 
-	public static long hashSurface(int[] baseStateIds, int[] baseHeights, int[] topHeights, int[] biomeIds,
+	public static long hashSurface(int[] baseStateIds, int[] baseHeights, int[] topHeights, String[] biomeKeys,
 			byte[] lightAbove, boolean[] glowing, boolean[] cave, List<List<MapTile.Overlay>> overlays) {
 		long hash = append(FNV_OFFSET, MapTile.FORMAT_VERSION);
 		hash = append(hash, baseStateIds.length);
 		for (int value : baseStateIds) hash = append(hash, value);
 		for (int value : baseHeights) hash = append(hash, value);
 		for (int value : topHeights) hash = append(hash, value);
-		for (int value : biomeIds) hash = append(hash, value);
+		for (String value : biomeKeys) hash = append(hash, hashString(value));
 		for (byte value : lightAbove) hash = append(hash, Byte.toUnsignedInt(value));
 		for (boolean value : glowing) hash = append(hash, value ? 1 : 0);
 		for (boolean value : cave) hash = append(hash, value ? 1 : 0);
@@ -43,9 +43,16 @@ public final class MapTileHasher {
 				hash = append(hash, Float.floatToIntBits(overlay.transparency()));
 				hash = append(hash, Byte.toUnsignedInt(overlay.lightAbove()));
 				hash = append(hash, overlay.glowing() ? 1 : 0);
+				hash = append(hash, overlay.opacity());
 			}
 		}
 		return hash;
+	}
+
+	public static long hashSurface(int[] baseStateIds, int[] baseHeights, int[] topHeights, int[] biomeIds,
+			byte[] lightAbove, boolean[] glowing, boolean[] cave, List<List<MapTile.Overlay>> overlays) {
+		return hashSurface(baseStateIds, baseHeights, topHeights, MapTile.legacyBiomeKeys(biomeIds), lightAbove,
+				glowing, cave, overlays);
 	}
 
 	public static long hashString(String value) {

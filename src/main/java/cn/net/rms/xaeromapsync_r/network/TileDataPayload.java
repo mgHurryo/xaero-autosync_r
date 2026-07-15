@@ -50,7 +50,7 @@ public final class TileDataPayload {
 		buffer.readBytes(payload);
 		CompressionCodec.MapTileSurfaceData surface = CompressionCodec.decodeSurface(payload, TILE_HEIGHT_COUNT, compression);
 		MapTile tile = new MapTile(dimension, chunkX, chunkZ, surface.baseStateIds(), surface.baseHeights(),
-				surface.topHeights(), surface.biomeIds(), surface.lightAbove(), surface.glowing(), surface.cave(),
+				surface.topHeights(), surface.biomeKeys(), surface.lightAbove(), surface.glowing(), surface.cave(),
 				surface.overlays(), contentHash);
 		if (MapTileHasher.hashSurface(tile) != contentHash) {
 			throw new IllegalArgumentException("Map tile payload hash mismatch");

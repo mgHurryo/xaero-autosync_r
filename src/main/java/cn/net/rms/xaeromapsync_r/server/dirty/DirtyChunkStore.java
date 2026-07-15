@@ -15,6 +15,10 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Set;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
@@ -26,6 +30,7 @@ public final class DirtyChunkStore {
 	private final Map<String, DirtyChunkRecord> records = new LinkedHashMap<>();
 	private final Map<String, Long> generations = new HashMap<>();
 	private final Map<String, ClaimTicket> inFlight = new HashMap<>();
+	private final Set<String> priorityClaims = new LinkedHashSet<>();
 	private long currentTick;
 	private long nextClaimId = 1L;
 	private boolean paused;
@@ -67,11 +72,19 @@ public final class DirtyChunkStore {
 		return true;
 	}
 
+	public synchronized boolean prioritizeDiscovered(String dimension, int chunkX, int chunkZ) {
+		boolean added = markDiscovered(dimension, chunkX, chunkZ);
+		String key = key(dimension, chunkX, chunkZ);
+		if (records.containsKey(key)) priorityClaims.add(key);
+		return added;
+	}
+
 	public synchronized void load(MinecraftServer server) {
 		Path path = path(server);
 		records.clear();
 		generations.clear();
 		inFlight.clear();
+		priorityClaims.clear();
 		if (!Files.exists(path)) {
 			return;
 		}
@@ -126,29 +139,60 @@ public final class DirtyChunkStore {
 	}
 
 	public synchronized List<StableDirtyChunk> claimStableDirtyChunks(int budget) {
-		if (budget < 0) {
+		return claimStableDirtyChunks(budget, budget);
+	}
+
+	public synchronized List<StableDirtyChunk> claimStableDirtyChunks(int scanBudget, int claimBudget) {
+		if (scanBudget < 0 || claimBudget < 0) {
 			throw new IllegalArgumentException("Dirty chunk budget must not be negative");
 		}
-		if (paused || budget == 0) {
+		if (paused || scanBudget == 0 || claimBudget == 0) {
 			return Collections.emptyList();
 		}
 
-		List<StableDirtyChunk> claimed = new ArrayList<>(Math.min(budget, records.size()));
-		for (Map.Entry<String, DirtyChunkRecord> entry : records.entrySet()) {
-			if (claimed.size() >= budget) {
-				break;
+		List<StableDirtyChunk> claimed = new ArrayList<>(Math.min(claimBudget, records.size()));
+		Set<String> inspectedKeys = new HashSet<>(Math.min(scanBudget, records.size()));
+		List<String> rotateKeys = new ArrayList<>(Math.min(scanBudget, records.size()));
+		List<String> rotatePriorityKeys = new ArrayList<>(Math.min(scanBudget, priorityClaims.size()));
+		int inspected = 0;
+		Iterator<String> priorityIterator = priorityClaims.iterator();
+		while (priorityIterator.hasNext() && claimed.size() < claimBudget && inspected < scanBudget) {
+			String key = priorityIterator.next();
+			inspected++;
+			inspectedKeys.add(key);
+			rotateKeys.add(key);
+			if (claim(key, records.get(key), claimed) || !records.containsKey(key)) {
+				priorityIterator.remove();
+			} else {
+				priorityIterator.remove();
+				rotatePriorityKeys.add(key);
 			}
-			String key = entry.getKey();
-			DirtyChunkRecord record = entry.getValue();
-			if (record.state() != DirtyActivityState.STABLE || inFlight.containsKey(key)) {
-				continue;
-			}
-			long generation = generations.getOrDefault(key, 0L);
-			long claimId = nextClaimId++;
-			inFlight.put(key, new ClaimTicket(claimId, generation));
-			claimed.add(new StableDirtyChunk(key, claimId, generation, record));
+		}
+		priorityClaims.addAll(rotatePriorityKeys);
+		Iterator<Map.Entry<String, DirtyChunkRecord>> recordIterator = records.entrySet().iterator();
+		while (recordIterator.hasNext() && claimed.size() < claimBudget && inspected < scanBudget) {
+			Map.Entry<String, DirtyChunkRecord> entry = recordIterator.next();
+			if (!inspectedKeys.add(entry.getKey())) continue;
+			inspected++;
+			rotateKeys.add(entry.getKey());
+			claim(entry.getKey(), entry.getValue(), claimed);
+		}
+		// Rotate inspected records so a large ACTIVE/COOLDOWN prefix cannot starve
+		// stable work beyond the bounded per-tick scan window.
+		for (String key : rotateKeys) {
+			DirtyChunkRecord record = records.remove(key);
+			if (record != null) records.put(key, record);
 		}
 		return Collections.unmodifiableList(claimed);
+	}
+
+	private boolean claim(String key, DirtyChunkRecord record, List<StableDirtyChunk> claimed) {
+		if (record == null || record.state() != DirtyActivityState.STABLE || inFlight.containsKey(key)) return false;
+		long generation = generations.getOrDefault(key, 0L);
+		long claimId = nextClaimId++;
+		inFlight.put(key, new ClaimTicket(claimId, generation));
+		claimed.add(new StableDirtyChunk(key, claimId, generation, record));
+		return true;
 	}
 
 	public synchronized boolean confirmProcessed(StableDirtyChunk claimedChunk) {
@@ -163,6 +207,7 @@ public final class DirtyChunkStore {
 		records.remove(claimedChunk.key);
 		generations.remove(claimedChunk.key);
 		inFlight.remove(claimedChunk.key);
+		priorityClaims.remove(claimedChunk.key);
 		return true;
 	}
 
@@ -176,6 +221,10 @@ public final class DirtyChunkStore {
 			records.put(claimedChunk.key, record);
 		}
 		return true;
+	}
+
+	public synchronized boolean isCurrentClaim(StableDirtyChunk claimedChunk) {
+		return hasCurrentClaim(claimedChunk);
 	}
 
 	/**

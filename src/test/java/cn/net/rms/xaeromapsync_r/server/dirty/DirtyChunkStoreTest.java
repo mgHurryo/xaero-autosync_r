@@ -18,6 +18,38 @@ import org.junit.jupiter.api.Test;
 
 final class DirtyChunkStoreTest {
 	@Test
+	void clientReadyHintMovesLoadedChunkAheadOfNormalBacklog() {
+		DirtyChunkStore store = new DirtyChunkStore(false);
+		store.markDiscovered("minecraft:overworld", 1, 0);
+		store.markDiscovered("minecraft:overworld", 2, 0);
+		store.prioritizeDiscovered("minecraft:overworld", 9, 0);
+
+		assertEquals(9, store.claimStableDirtyChunks(1).get(0).chunkX());
+	}
+
+	@Test
+	void boundedScanRotatesPastNonStableBacklog() {
+		DirtyChunkStore store = new DirtyChunkStore(false);
+		store.markDirty("minecraft:overworld", new BlockPos(0, 64, 0));
+		store.markDirty("minecraft:overworld", new BlockPos(16, 64, 0));
+		store.markDirty("minecraft:overworld", new BlockPos(32, 64, 0));
+		store.markDiscovered("minecraft:overworld", 9, 0);
+
+		assertTrue(store.claimStableDirtyChunks(2, 1).isEmpty());
+		assertEquals(9, store.claimStableDirtyChunks(2, 1).get(0).chunkX());
+	}
+
+	@Test
+	void nonStablePriorityPrefixCannotStarveStablePriorityWork() {
+		DirtyChunkStore store = new DirtyChunkStore(false);
+		store.prioritizeDiscovered("minecraft:overworld", 1, 0);
+		store.markDirty("minecraft:overworld", new BlockPos(16, 64, 0));
+		store.prioritizeDiscovered("minecraft:overworld", 9, 0);
+
+		assertTrue(store.claimStableDirtyChunks(1, 1).isEmpty());
+		assertEquals(9, store.claimStableDirtyChunks(1, 1).get(0).chunkX());
+	}
+	@Test
 	void claimsStableChunksWithinBudgetAndRemovesOnlyAfterConfirmation() {
 		DirtyChunkStore store = stableStore(3);
 
@@ -47,6 +79,17 @@ final class DirtyChunkStoreTest {
 	}
 
 	@Test
+	void outstandingClaimRemainsInPersistentRecordSetDuringShutdownWindow() {
+		DirtyChunkStore store = stableStore(1);
+
+		store.claimStableDirtyChunks(1);
+
+		assertEquals(1, store.totalCount());
+		assertEquals(1, store.statistics().stable());
+		assertEquals(1, store.statistics().inFlight());
+	}
+
+	@Test
 	void newDirtyChangeInvalidatesOutstandingClaim() {
 		DirtyChunkStore store = stableStore(1);
 		DirtyChunkStore.StableDirtyChunk claim = store.claimStableDirtyChunks(1).get(0);
@@ -67,6 +110,7 @@ final class DirtyChunkStoreTest {
 		store.setPaused(true);
 		assertTrue(store.claimStableDirtyChunks(1).isEmpty());
 		assertThrows(IllegalArgumentException.class, () -> store.claimStableDirtyChunks(-1));
+		assertThrows(IllegalArgumentException.class, () -> store.claimStableDirtyChunks(1, -1));
 	}
 
 	@Test

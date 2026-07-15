@@ -17,13 +17,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -34,45 +36,73 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.storage.LevelResource;
 
 public final class MapTileDataStore {
-	private static final int MAGIC = 0x584d5333;
-	static final String CACHE_DIRECTORY = "tiles-v3";
+	private static final int MAGIC = 0x584d5335;
+	static final String CACHE_DIRECTORY = "tiles-v5";
 	private static final int TILE_VALUES = 256;
 	private static final int MAX_MEMORY_TILES = 1024;
 	private static final long SYNCHRONOUS_WRITE_TIMEOUT_MILLIS = 2_000L;
+	private static final int WRITER_STRIPES = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
+	private static final int MAX_PENDING_WRITES_PER_STRIPE = 256;
 	private static final Pattern TILE_FILE = Pattern.compile("(-?\\d+)_(-?\\d+)\\.tile");
 	private final Map<String, MapTile> memory = new LinkedHashMap<>(128, 0.75F, true) {
 		@Override protected boolean removeEldestEntry(Map.Entry<String, MapTile> eldest) { return size() > MAX_MEMORY_TILES; }
 	};
-	private ExecutorService writer;
+	private ExecutorService[] writers;
 	private Path root;
 
 	public synchronized void start(MinecraftServer server) {
 		start(server.getWorldPath(LevelResource.ROOT).resolve("xaero-mapsync_r").resolve(CACHE_DIRECTORY));
 	}
 
-	synchronized void start(Path root) {
+	public synchronized void start(Path root) {
 		this.root = root;
-		writer = Executors.newSingleThreadExecutor(runnable -> {
-			Thread thread = new Thread(runnable, "xaero-mapsync-tile-writer");
-			thread.setDaemon(true);
-			return thread;
-		});
+		writers = new ExecutorService[WRITER_STRIPES];
+		for (int index = 0; index < writers.length; index++) {
+			int stripe = index;
+			writers[index] = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+					new ArrayBlockingQueue<>(MAX_PENDING_WRITES_PER_STRIPE), runnable -> {
+						Thread thread = new Thread(runnable, "xaero-mapsync-tile-writer-" + stripe);
+						thread.setDaemon(true);
+						return thread;
+					}, new ThreadPoolExecutor.AbortPolicy());
+		}
 	}
 
 	public void put(MapTile tile) {
+		putAsynchronously(tile, successful -> { });
+	}
+
+	/**
+	 * Persists without blocking the server tick. Writes for the same tile stay ordered,
+	 * while unrelated coordinates can use separate writer stripes.
+	 */
+	public boolean putAsynchronously(MapTile tile, Consumer<Boolean> completion) {
+		if (tile == null || completion == null) throw new IllegalArgumentException("Tile and completion callback are required");
 		Path target;
 		ExecutorService activeWriter;
 		synchronized (this) {
-			memory.put(key(tile.dimension(), tile.chunkX(), tile.chunkZ()), tile);
 			target = path(tile.dimension(), tile.chunkX(), tile.chunkZ());
-			activeWriter = writer;
+			activeWriter = writerFor(tile.dimension(), tile.chunkX(), tile.chunkZ());
 		}
-		if (target != null && activeWriter != null) {
-			try {
-				activeWriter.execute(() -> write(target, tile));
-			} catch (RejectedExecutionException exception) {
-				XaeroMapsync_r.LOGGER.warn("Map tile cache writer rejected {}", target, exception);
-			}
+		if (target == null || activeWriter == null) return false;
+		try {
+			activeWriter.execute(() -> {
+				boolean successful = write(target, tile);
+				if (successful) {
+					synchronized (MapTileDataStore.this) {
+						memory.put(key(tile.dimension(), tile.chunkX(), tile.chunkZ()), tile);
+					}
+				}
+				try {
+					completion.accept(successful);
+				} catch (RuntimeException exception) {
+					XaeroMapsync_r.LOGGER.warn("Map tile completion callback failed for {}", target, exception);
+				}
+			});
+			return true;
+		} catch (RejectedExecutionException exception) {
+			XaeroMapsync_r.LOGGER.warn("Map tile cache writer rejected {}", target, exception);
+			return false;
 		}
 	}
 
@@ -85,7 +115,7 @@ public final class MapTileDataStore {
 		ExecutorService activeWriter;
 		synchronized (this) {
 			target = path(tile.dimension(), tile.chunkX(), tile.chunkZ());
-			activeWriter = writer;
+			activeWriter = writerFor(tile.dimension(), tile.chunkX(), tile.chunkZ());
 		}
 		if (target == null || activeWriter == null) {
 			XaeroMapsync_r.LOGGER.warn("Cannot persist map tile before the tile data store is started");
@@ -177,19 +207,31 @@ public final class MapTileDataStore {
 		return recovered;
 	}
 
-	public synchronized void stop() {
-		ExecutorService activeWriter = writer;
-		writer = null;
-		if (activeWriter == null) return;
-		activeWriter.shutdown();
-		try {
-			if (!activeWriter.awaitTermination(10, TimeUnit.SECONDS)) {
-				XaeroMapsync_r.LOGGER.warn("Timed out while flushing map tile cache writes");
-			}
-		} catch (InterruptedException exception) {
-			Thread.currentThread().interrupt();
-			XaeroMapsync_r.LOGGER.warn("Interrupted while flushing map tile cache writes", exception);
+	public void stop() {
+		ExecutorService[] activeWriters;
+		synchronized (this) {
+			activeWriters = writers;
+			writers = null;
 		}
+		if (activeWriters == null) return;
+		for (ExecutorService activeWriter : activeWriters) activeWriter.shutdown();
+		for (ExecutorService activeWriter : activeWriters) {
+			try {
+				if (!activeWriter.awaitTermination(10, TimeUnit.SECONDS)) {
+					XaeroMapsync_r.LOGGER.warn("Timed out while flushing map tile cache writes");
+				}
+			} catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+				XaeroMapsync_r.LOGGER.warn("Interrupted while flushing map tile cache writes", exception);
+				break;
+			}
+		}
+	}
+
+	private ExecutorService writerFor(String dimension, int chunkX, int chunkZ) {
+		if (writers == null || writers.length == 0) return null;
+		int stripe = Math.floorMod(key(dimension, chunkX, chunkZ).hashCode(), writers.length);
+		return writers[stripe];
 	}
 
 	private synchronized Path path(String dimension, int chunkX, int chunkZ) {
@@ -214,7 +256,7 @@ public final class MapTileDataStore {
 				writeArray(output, tile.baseStateIds());
 				writeArray(output, tile.baseHeights());
 				writeArray(output, tile.topHeights());
-				writeArray(output, tile.biomeIds());
+				writeStrings(output, tile.biomeKeys());
 				writeBytes(output, tile.lightAbove());
 				writeBooleans(output, tile.glowing());
 				writeBooleans(output, tile.cave());
@@ -249,7 +291,7 @@ public final class MapTileDataStore {
 			int[] baseStates = readArray(input);
 			int[] baseHeights = readArray(input);
 			int[] topHeights = readArray(input);
-			int[] biomes = readArray(input);
+			String[] biomes = readStrings(input);
 			byte[] lights = readBytes(input);
 			boolean[] glowing = readBooleans(input);
 			boolean[] cave = readBooleans(input);
@@ -272,6 +314,17 @@ public final class MapTileDataStore {
 	private static int[] readArray(DataInputStream input) throws IOException {
 		int[] values = new int[TILE_VALUES];
 		for (int index = 0; index < TILE_VALUES; index++) values[index] = input.readInt();
+		return values;
+	}
+
+	private static void writeStrings(DataOutputStream output, String[] values) throws IOException {
+		if (values.length != TILE_VALUES) throw new IOException("Invalid map tile value count: " + values.length);
+		for (String value : values) output.writeUTF(value);
+	}
+
+	private static String[] readStrings(DataInputStream input) throws IOException {
+		String[] values = new String[TILE_VALUES];
+		for (int index = 0; index < TILE_VALUES; index++) values[index] = input.readUTF();
 		return values;
 	}
 
@@ -310,6 +363,7 @@ public final class MapTileDataStore {
 				output.writeFloat(overlay.transparency());
 				output.writeByte(overlay.lightAbove());
 				output.writeByte(overlay.glowing() ? 1 : 0);
+				output.writeShort(overlay.opacity());
 			}
 		}
 	}
@@ -327,7 +381,8 @@ public final class MapTileDataStore {
 				int glowing = input.readUnsignedByte();
 				if (glowing > 1) throw new IOException("Invalid overlay glowing value: " + glowing);
 				try {
-					column.add(new MapTile.Overlay(stateId, transparency, light, glowing == 1));
+					int opacity = input.readUnsignedShort();
+					column.add(new MapTile.Overlay(stateId, transparency, light, glowing == 1, opacity));
 				} catch (IllegalArgumentException exception) {
 					throw new IOException("Invalid map tile overlay", exception);
 				}

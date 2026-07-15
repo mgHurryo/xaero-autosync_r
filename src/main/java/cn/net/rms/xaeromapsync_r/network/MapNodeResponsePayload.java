@@ -12,25 +12,40 @@ public final class MapNodeResponsePayload {
 	private static final int MAX_NODES = 256;
 	private static final int MAX_ENTRIES = 256;
 	private static final int MAX_DIMENSION_LENGTH = 256;
+	private final long syncId;
+	private final long requestId;
 	private final long rootHash;
 	private final String dimension;
+	private final boolean nodeRequestResponse;
 	private final List<MerkleNode> nodes;
 	private final List<MapTileIndexEntry> entries;
 
-	public MapNodeResponsePayload(String dimension, long rootHash, Collection<MerkleNode> nodes, Collection<MapTileIndexEntry> entries) {
+	public MapNodeResponsePayload(String dimension, long rootHash, boolean nodeRequestResponse,
+			Collection<MerkleNode> nodes, Collection<MapTileIndexEntry> entries) {
+		this(dimension, rootHash, 0L, 0L, nodeRequestResponse, nodes, entries);
+	}
+
+	public MapNodeResponsePayload(String dimension, long rootHash, long syncId, long requestId,
+			boolean nodeRequestResponse, Collection<MerkleNode> nodes, Collection<MapTileIndexEntry> entries) {
 		if (dimension == null || dimension.isBlank()) throw new IllegalArgumentException("Merkle response dimension is required");
 		if (nodes.size() > MAX_NODES || entries.size() > MAX_ENTRIES) {
 			throw new IllegalArgumentException("Merkle response exceeds bounded size");
 		}
 		this.dimension = dimension;
 		this.rootHash = rootHash;
+		this.syncId = syncId;
+		this.requestId = requestId;
+		this.nodeRequestResponse = nodeRequestResponse;
 		this.nodes = Collections.unmodifiableList(new ArrayList<>(nodes));
 		this.entries = Collections.unmodifiableList(new ArrayList<>(entries));
 	}
 
 	public static MapNodeResponsePayload read(FriendlyByteBuf buffer) {
+		long syncId = buffer.readLong();
+		long requestId = buffer.readLong();
 		String dimension = buffer.readUtf(MAX_DIMENSION_LENGTH);
 		long rootHash = buffer.readLong();
+		boolean nodeRequestResponse = buffer.readBoolean();
 		int nodeCount = buffer.readVarInt();
 		if (nodeCount < 0 || nodeCount > MAX_NODES) throw new IllegalArgumentException("Invalid Merkle node count: " + nodeCount);
 		List<MerkleNode> nodes = new ArrayList<>(nodeCount);
@@ -45,12 +60,15 @@ public final class MapNodeResponsePayload {
 			entries.add(new MapTileIndexEntry(buffer.readUtf(MAX_DIMENSION_LENGTH), buffer.readInt(), buffer.readInt(),
 					buffer.readLong(), buffer.readVarLong(), buffer.readLong()));
 		}
-		return new MapNodeResponsePayload(dimension, rootHash, nodes, entries);
+		return new MapNodeResponsePayload(dimension, rootHash, syncId, requestId, nodeRequestResponse, nodes, entries);
 	}
 
 	public void write(FriendlyByteBuf buffer) {
+		buffer.writeLong(syncId);
+		buffer.writeLong(requestId);
 		buffer.writeUtf(dimension, MAX_DIMENSION_LENGTH);
 		buffer.writeLong(rootHash);
+		buffer.writeBoolean(nodeRequestResponse);
 		buffer.writeVarInt(nodes.size());
 		for (MerkleNode node : nodes) {
 			buffer.writeUtf(node.dimension(), MAX_DIMENSION_LENGTH);
@@ -71,8 +89,11 @@ public final class MapNodeResponsePayload {
 		}
 	}
 
+	public long syncId() { return syncId; }
+	public long requestId() { return requestId; }
 	public long rootHash() { return rootHash; }
 	public String dimension() { return dimension; }
+	public boolean nodeRequestResponse() { return nodeRequestResponse; }
 	public List<MerkleNode> nodes() { return nodes; }
 	public List<MapTileIndexEntry> entries() { return entries; }
 }

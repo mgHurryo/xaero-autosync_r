@@ -9,8 +9,8 @@ import org.junit.jupiter.api.Test;
 
 final class MapTileHasherTest {
 	@Test
-	void modelAndProtocolAdvertiseMapFormatThree() {
-		assertEquals(3, MapTile.FORMAT_VERSION);
+	void modelAndProtocolAdvertiseMapFormatFive() {
+		assertEquals(5, MapTile.FORMAT_VERSION);
 		assertEquals(MapTile.FORMAT_VERSION, SharedMapProtocolDefaults.MAP_FORMAT_VERSION);
 	}
 
@@ -30,7 +30,7 @@ final class MapTileHasherTest {
 	}
 
 	@Test
-	void v2SurfaceHashIncludesOverlayOrderAndNativeFlags() {
+	void v5SurfaceHashIncludesOverlayOrderOpacityAndNativeFlags() {
 		int[] values = new int[] {1};
 		byte[] lights = new byte[] {7};
 		boolean[] disabled = new boolean[] {false};
@@ -45,8 +45,13 @@ final class MapTileHasherTest {
 		long reordered = MapTileHasher.hashSurface(values, values, values, values, lights, disabled, disabled, reversed);
 		boolean[] glowing = new boolean[] {true};
 		long flagged = MapTileHasher.hashSurface(values, values, values, values, lights, glowing, disabled, firstOrder);
+		List<List<MapTile.Overlay>> opaque = List.of(List.of(
+				new MapTile.Overlay(4, 0.66F, (byte) 8, false, 3),
+				new MapTile.Overlay(5, 0.5F, (byte) 3, true)));
+		long opacityChanged = MapTileHasher.hashSurface(values, values, values, values, lights, disabled, disabled, opaque);
 
 		assertNotEquals(original, reordered);
 		assertNotEquals(original, flagged);
+		assertNotEquals(original, opacityChanged);
 	}
 }

@@ -2,7 +2,7 @@
 
 面向 Minecraft Java Edition 1.17.1 Fabric 服务器的共享地图与路径点同步 Mod。服务器维护已探索区域、地图 tile 和共享路径点，客户端继续使用 Xaero World Map 与 Xaero Minimap 的原生界面查看和管理同步结果。
 
-当前预发布版本为 `2.1.0-beta.3`，固定适配：
+当前预发布版本为 `2.1.0-beta.4`，固定适配：
 
 - Xaero's World Map `1.25.1`
 - Xaero's Minimap `22.11.1`

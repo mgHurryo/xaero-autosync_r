@@ -82,7 +82,10 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		return exception instanceof IllegalStateException && exception.getMessage() != null
 				&& (exception.getMessage().contains("not initialized")
 						|| exception.getMessage().contains("not loaded yet")
-						|| exception.getMessage().contains("not fully loaded"));
+						|| exception.getMessage().contains("not fully loaded")
+						|| exception.getMessage().contains("save is pending")
+						|| exception.getMessage().contains("cache is pending")
+						|| exception.getMessage().contains("writing is paused"));
 	}
 
 	static boolean supportsVersion(String version) {
@@ -130,19 +133,20 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Method currentSession;
 		private final Method getMapProcessor;
 		private final Method getMapRegion;
-		private final Method getRegionDetection;
-		private final Method removeMapRegion;
 		private final Method getTilePool;
 		private final Method getBlockStateShortShapeCache;
 		private final Method getMapSaveLoad;
 		private final Method getCurrentDimension;
+		private final Method waitForLoadingToFinish;
 		private final Method getChunk;
 		private final Method setChunk;
 		private final Method getRegionLoadState;
-		private final Method setRegionLoadState;
 		private final Method isBeingWritten;
 		private final Method setBeingWritten;
+		private final Method isWritingPaused;
 		private final Field lastSaveTimeField;
+		private final Method isAllCachePrepared;
+		private final Method setAllCachePrepared;
 		private final Method isRefreshing;
 		private final Method requestRefresh;
 		private final Method cancelRefresh;
@@ -165,7 +169,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Method addOverlay;
 		private final Field biomeKeyManagerField;
 		private final Method biomeKeyGet;
-		private final Method updateSave;
+		private final Method requestLoad;
+		private final Method toCacheContains;
 		private final Method getToSave;
 		private final Field writerThreadPauseSyncField;
 		private final Field chunkIncludeInSaveField;
@@ -178,7 +183,6 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			mapProcessorClass = Class.forName("xaero.map.MapProcessor", false, loader);
 			mapRegionClass = Class.forName("xaero.map.region.MapRegion", false, loader);
 			Class<?> leveledRegionClass = Class.forName("xaero.map.region.LeveledRegion", false, loader);
-			Class<?> regionDetectionClass = Class.forName("xaero.map.file.RegionDetection", false, loader);
 			mapTileChunkClass = Class.forName("xaero.map.region.MapTileChunk", false, loader);
 			xaeroMapTileClass = Class.forName("xaero.map.region.MapTile", false, loader);
 			mapBlockClass = Class.forName("xaero.map.region.MapBlock", false, loader);
@@ -192,19 +196,20 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			currentSession = method(sessionClass, sessionClass, "getCurrentSession");
 			getMapProcessor = method(sessionClass, mapProcessorClass, "getMapProcessor");
 			getMapRegion = method(mapProcessorClass, mapRegionClass, "getMapRegion", int.class, int.class, boolean.class);
-			getRegionDetection = method(mapProcessorClass, regionDetectionClass, "getRegionDetection", int.class, int.class);
-			removeMapRegion = method(mapProcessorClass, "removeMapRegion", leveledRegionClass);
 			getTilePool = method(mapProcessorClass, mapTilePoolClass, "getTilePool");
 			getBlockStateShortShapeCache = method(mapProcessorClass, blockStateShortShapeCacheClass, "getBlockStateShortShapeCache");
 			getMapSaveLoad = method(mapProcessorClass, mapSaveLoadClass, "getMapSaveLoad");
 			getCurrentDimension = method(mapProcessorClass, String.class, "getCurrentDimension");
+			waitForLoadingToFinish = method(mapProcessorClass, "waitForLoadingToFinish", Runnable.class);
 			getChunk = method(mapRegionClass, mapTileChunkClass, "getChunk", int.class, int.class);
 			setChunk = method(mapRegionClass, "setChunk", int.class, int.class, mapTileChunkClass);
 			getRegionLoadState = method(mapRegionClass, byte.class, "getLoadState");
-			setRegionLoadState = method(mapRegionClass, "setLoadState", byte.class);
 			isBeingWritten = method(mapRegionClass, "isBeingWritten");
 			setBeingWritten = method(mapRegionClass, "setBeingWritten", boolean.class);
+			isWritingPaused = method(mapRegionClass, "isWritingPaused");
 			lastSaveTimeField = field(leveledRegionClass, "lastSaveTime", long.class);
+			isAllCachePrepared = method(leveledRegionClass, "isAllCachePrepared");
+			setAllCachePrepared = method(leveledRegionClass, "setAllCachePrepared", boolean.class);
 			isRefreshing = method(mapRegionClass, "isRefreshing");
 			requestRefresh = method(mapRegionClass, "requestRefresh", mapProcessorClass);
 			cancelRefresh = method(mapRegionClass, "cancelRefresh", mapProcessorClass);
@@ -227,7 +232,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			addOverlay = method(mapBlockClass, "addOverlay", overlayClass);
 			biomeKeyManagerField = field(mapSaveLoadClass, "biomeKeyManager", biomeKeyManagerClass);
 			biomeKeyGet = method(biomeKeyManagerClass, biomeKeyClass, "get", String.class);
-			updateSave = method(mapSaveLoadClass, "updateSave", leveledRegionClass, long.class);
+			requestLoad = method(mapSaveLoadClass, "requestLoad", mapRegionClass, String.class);
+			toCacheContains = method(mapSaveLoadClass, "toCacheContains", leveledRegionClass);
 			getToSave = method(mapSaveLoadClass, "getToSave");
 			writerThreadPauseSyncField = field(mapRegionClass, "writerThreadPauseSync", Object.class);
 			chunkIncludeInSaveField = field(mapTileChunkClass, "includeInSave", boolean.class);
@@ -258,37 +264,44 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			Object saveLoad = invoke(getMapSaveLoad, processor);
 			Object biomeKeyManager = biomeKeyManagerField.get(saveLoad);
 			Object xaeroTile = createTile(source, processor, biomeKeyManager, minecraft);
+			Throwable[] failure = new Throwable[1];
+			invoke(waitForLoadingToFinish, processor, (Runnable) () -> {
+				try {
+					applyAfterLoading(source, xaeroTile, processor, saveLoad);
+				} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
+					failure[0] = exception;
+				}
+			});
+			if (failure[0] != null) {
+				throwCause(failure[0]);
+			}
+		}
 
+		private void applyAfterLoading(MapTile source, Object xaeroTile, Object processor, Object saveLoad)
+				throws ReflectiveOperationException {
 			int regionX = regionCoordinate(source.chunkX());
 			int regionZ = regionCoordinate(source.chunkZ());
 			Object region = invoke(getMapRegion, processor, regionX, regionZ, false);
-			boolean createdRegion = region == null;
-			if (createdRegion) {
-				if (invoke(getRegionDetection, processor, regionX, regionZ) != null) {
-					throw new IllegalStateException("Xaero region has a detected save that is not loaded yet");
-				}
-				region = invoke(getMapRegion, processor, regionX, regionZ, true);
-			}
 			if (region == null) {
-				throw new IllegalStateException("Xaero refused to create map region " + regionX + "," + regionZ);
+				region = invoke(getMapRegion, processor, regionX, regionZ, true);
+				if (region == null) {
+					throw new IllegalStateException("Xaero region detection is not initialized");
+				}
+				Object writerSync = writerThreadPauseSyncField.get(region);
+				synchronized (writerSync) {
+					synchronized (region) {
+						invoke(setBeingWritten, region, true);
+						invoke(requestLoad, saveLoad, region, "shared map sync");
+					}
+				}
+				throw new IllegalStateException("Xaero region is not fully loaded: state=0");
 			}
 
 			Object writerSync = writerThreadPauseSyncField.get(region);
-			try {
-				synchronized (writerSync) {
-					synchronized (region) {
-						applyLocked(source, xaeroTile, processor, saveLoad, region, createdRegion);
-					}
+			synchronized (writerSync) {
+				synchronized (region) {
+					applyLocked(source, xaeroTile, processor, saveLoad, region);
 				}
-			} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
-				if (createdRegion) {
-					try {
-						invoke(removeMapRegion, processor, region);
-					} catch (ReflectiveOperationException | RuntimeException | LinkageError rollbackException) {
-						exception.addSuppressed(rollbackException);
-					}
-				}
-				throw exception;
 			}
 		}
 
@@ -344,18 +357,24 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		}
 
 		@SuppressWarnings("unchecked")
-		private void applyLocked(MapTile source, Object xaeroTile, Object processor, Object saveLoad, Object region,
-				boolean createdRegion) throws ReflectiveOperationException {
+		private void applyLocked(MapTile source, Object xaeroTile, Object processor, Object saveLoad, Object region)
+				throws ReflectiveOperationException {
 			byte originalRegionLoadState = ((Number) invoke(getRegionLoadState, region)).byteValue();
 			boolean originalBeingWritten = (Boolean) invoke(isBeingWritten, region);
+			boolean originalAllCachePrepared = (Boolean) invoke(isAllCachePrepared, region);
 			boolean originalRefreshing = (Boolean) invoke(isRefreshing, region);
 			boolean originalRegionTerrain = regionHasHadTerrainField.getBoolean(region);
 			List<Object> toSave = (List<Object>) invoke(getToSave, saveLoad);
-			boolean originallyScheduledToSave = toSave.contains(region);
-
-			if (createdRegion) {
-				invoke(setRegionLoadState, region, (byte) 2);
-			} else if (originalRegionLoadState != 2) {
+			if (toSave.contains(region)) {
+				throw new IllegalStateException("Xaero region save is pending");
+			}
+			if ((Boolean) invoke(toCacheContains, saveLoad, region)) {
+				throw new IllegalStateException("Xaero region cache is pending");
+			}
+			if ((Boolean) invoke(isWritingPaused, region)) {
+				throw new IllegalStateException("Xaero region writing is paused");
+			}
+			if (originalRegionLoadState != 2) {
 				throw new IllegalStateException("Xaero region is not fully loaded: state=" + originalRegionLoadState);
 			}
 
@@ -380,6 +399,9 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			Object shapeCache = invoke(getBlockStateShortShapeCache, processor);
 
 			try {
+				// Publishing a replacement tile invalidates Xaero's region-level cache summary
+				// before the render thread has prepared the corresponding leaf texture.
+				invoke(setAllCachePrepared, region, false);
 				if (createdChunk) {
 					invoke(setChunk, region, chunkInRegionX, chunkInRegionZ, chunk);
 				}
@@ -387,12 +409,9 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				invoke(setChanged, chunk, true);
 				invoke(setHasHadTerrain, chunk);
 				invoke(requestRefresh, region, processor);
-				scheduleSave(saveLoad, region, originalBeingWritten);
+				deferNativeSave(region, originalBeingWritten);
 			} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
 				try {
-					if (!originallyScheduledToSave) {
-						toSave.remove(region);
-					}
 					if (!originalRefreshing && (Boolean) invoke(isRefreshing, region)) {
 						invoke(cancelRefresh, region, processor);
 					}
@@ -406,8 +425,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 						chunkHasHadTerrainField.setBoolean(chunk, originalChunkTerrain);
 					}
 					regionHasHadTerrainField.setBoolean(region, originalRegionTerrain);
+					invoke(setAllCachePrepared, region, originalAllCachePrepared);
 					invoke(setBeingWritten, region, originalBeingWritten);
-					invoke(setRegionLoadState, region, originalRegionLoadState);
 				} catch (ReflectiveOperationException | RuntimeException | LinkageError rollbackException) {
 					exception.addSuppressed(rollbackException);
 				}
@@ -415,14 +434,16 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			}
 		}
 
-		private void scheduleSave(Object saveLoad, Object region, boolean originalBeingWritten)
+		private void deferNativeSave(Object region, boolean originalBeingWritten)
 				throws ReflectiveOperationException {
 			long originalLastSaveTime = lastSaveTimeField.getLong(region);
 			long now = System.currentTimeMillis();
 			try {
+				// Xaero prepares the texture cache during later render passes. Its own 60-second
+				// save delay must start after this mutation or MapSaveLoad can persist an
+				// unprepared cache and crash the client.
+				lastSaveTimeField.setLong(region, now);
 				invoke(setBeingWritten, region, true);
-				lastSaveTimeField.setLong(region, now - 60_001L);
-				invoke(updateSave, saveLoad, region, now);
 			} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
 				lastSaveTimeField.setLong(region, originalLastSaveTime);
 				invoke(setBeingWritten, region, originalBeingWritten);

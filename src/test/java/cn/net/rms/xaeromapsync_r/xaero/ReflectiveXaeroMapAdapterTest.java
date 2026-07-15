@@ -53,8 +53,22 @@ final class ReflectiveXaeroMapAdapterTest {
 		ClassSignature signature = readClassSignature("xaero/map/region/LeveledRegion.class");
 
 		assertEquals("J", signature.fieldDescriptor("lastSaveTime"));
+		assertEquals("()Z", signature.methodDescriptor("isAllCachePrepared"));
+		assertEquals("(Z)V", signature.methodDescriptor("setAllCachePrepared"));
 		assertNull(signature.methodDescriptor("getLastSaveTime"));
 		assertNull(signature.methodDescriptor("setLastSaveTime"));
+	}
+
+	@Test
+	void pinnedXaeroJarExposesNativeLoadingGate() throws IOException {
+		ClassSignature signature = readClassSignature("xaero/map/MapProcessor.class");
+		ClassSignature saveLoad = readClassSignature("xaero/map/file/MapSaveLoad.class");
+		ClassSignature region = readClassSignature("xaero/map/region/MapRegion.class");
+
+		assertEquals("(Ljava/lang/Runnable;)V", signature.methodDescriptor("waitForLoadingToFinish"));
+		assertTrue(saveLoad.hasMethodDescriptor("requestLoad", "(Lxaero/map/region/MapRegion;Ljava/lang/String;)V"));
+		assertEquals("(Lxaero/map/region/LeveledRegion;)Z", saveLoad.methodDescriptor("toCacheContains"));
+		assertEquals("()Z", region.methodDescriptor("isWritingPaused"));
 	}
 
 	@Test
@@ -136,6 +150,26 @@ final class ReflectiveXaeroMapAdapterTest {
 		assertTrue(adapter.isAvailable());
 	}
 
+	@Test
+	void pendingRegionSaveRemainsAvailableForRetry() {
+		ReflectiveXaeroMapAdapter adapter = new ReflectiveXaeroMapAdapter(tile -> {
+			throw new IllegalStateException("Xaero region save is pending");
+		});
+
+		assertFalse(adapter.apply(tile(256)));
+		assertTrue(adapter.isAvailable());
+	}
+
+	@Test
+	void pendingRegionCacheRemainsAvailableForRetry() {
+		ReflectiveXaeroMapAdapter adapter = new ReflectiveXaeroMapAdapter(tile -> {
+			throw new IllegalStateException("Xaero region cache is pending");
+		});
+
+		assertFalse(adapter.apply(tile(256)));
+		assertTrue(adapter.isAvailable());
+	}
+
 	private static MapTile tile(int size) {
 		return new MapTile("minecraft:overworld", -1, -5, new int[size], new int[size], new int[size], new int[size], 1L);
 	}
@@ -156,6 +190,7 @@ final class ReflectiveXaeroMapAdapterTest {
 	private static final class ClassSignature extends ClassVisitor {
 		private final java.util.Map<String, String> fields = new java.util.HashMap<>();
 		private final java.util.Map<String, String> methods = new java.util.HashMap<>();
+		private final java.util.Set<String> methodSignatures = new java.util.HashSet<>();
 
 		private ClassSignature() {
 			super(Opcodes.ASM9);
@@ -170,6 +205,7 @@ final class ReflectiveXaeroMapAdapterTest {
 		@Override
 		public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
 			methods.put(name, descriptor);
+			methodSignatures.add(name + descriptor);
 			return null;
 		}
 
@@ -179,6 +215,10 @@ final class ReflectiveXaeroMapAdapterTest {
 
 		private String methodDescriptor(String name) {
 			return methods.get(name);
+		}
+
+		private boolean hasMethodDescriptor(String name, String descriptor) {
+			return methodSignatures.contains(name + descriptor);
 		}
 	}
 }

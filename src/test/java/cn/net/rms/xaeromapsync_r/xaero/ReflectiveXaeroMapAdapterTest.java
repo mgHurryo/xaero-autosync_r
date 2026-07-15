@@ -69,6 +69,17 @@ final class ReflectiveXaeroMapAdapterTest {
 	}
 
 	@Test
+	void pinnedXaeroJarExposesNativeOverlayConstructionAndInsertion() throws IOException {
+		ClassSignature overlay = readClassSignature("xaero/map/region/Overlay.class");
+		ClassSignature mapBlock = readClassSignature("xaero/map/region/MapBlock.class");
+
+		assertEquals("(Lnet/minecraft/class_2680;FBZ)V", overlay.methodDescriptor("<init>"));
+		assertEquals("(Lxaero/map/region/Overlay;)V", mapBlock.methodDescriptor("addOverlay"));
+		assertEquals("(Lnet/minecraft/class_2680;IILxaero/map/biome/BiomeKey;BZZ)V",
+				mapBlock.methodDescriptor("write"));
+	}
+
+	@Test
 	void validTileIsDelegatedToRuntime() {
 		AtomicInteger calls = new AtomicInteger();
 		ReflectiveXaeroMapAdapter adapter = new ReflectiveXaeroMapAdapter(tile -> calls.incrementAndGet());

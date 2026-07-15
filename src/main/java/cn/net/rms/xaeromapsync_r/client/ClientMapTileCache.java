@@ -10,7 +10,6 @@ import java.io.OutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Properties;
@@ -65,11 +64,7 @@ public final class ClientMapTileCache {
 		try {
 			Files.createDirectories(persistencePath.getParent());
 			try (OutputStream output = Files.newOutputStream(temp)) { values.store(output, "Xaero Map Sync applied revisions"); }
-			try {
-				Files.move(temp, persistencePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-			} catch (java.nio.file.AtomicMoveNotSupportedException exception) {
-				Files.move(temp, persistencePath, StandardCopyOption.REPLACE_EXISTING);
-			}
+			SharedMapClient.replaceFile(temp, persistencePath);
 			dirty = false;
 		} catch (IOException exception) {
 			XaeroMapsync_r.LOGGER.warn("Failed to save client tile revisions at {}", persistencePath, exception);

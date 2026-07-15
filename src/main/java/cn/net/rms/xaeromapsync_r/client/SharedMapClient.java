@@ -50,6 +50,7 @@ public final class SharedMapClient {
 	private static XaeroWaypointAdapter waypointAdapter;
 	private static XaeroMapAdapter mapAdapter;
 	private static int persistenceTicks;
+	private static int mapRootPollTicks;
 	private static int mapNodeRequestsInFlight;
 	private static final Map<String, Long> COMPLETED_MAP_ROOTS = new java.util.LinkedHashMap<>();
 	private static java.nio.file.Path rootHashPath;
@@ -60,6 +61,7 @@ public final class SharedMapClient {
 	private static long syncingRootHash;
 	private static long lastMapProgressMillis;
 	private static long retryMapSyncAtMillis;
+	private static boolean mapSyncIncomplete;
 	private static boolean waypointSanitizationPending = true;
 
 	private SharedMapClient() {
@@ -69,8 +71,8 @@ public final class SharedMapClient {
 		XaeroMapsync_r.LOGGER.info("Xaero availability: {}", XaeroDetector.status().message());
 		waypointAdapter = XaeroWaypointAdapters.create();
 		mapAdapter = new ReflectiveXaeroMapAdapter();
-		TILE_DATA.load(FabricLoader.getInstance().getConfigDir().resolve("xaero-mapsync_r-client-revisions.properties"));
-		rootHashPath = FabricLoader.getInstance().getConfigDir().resolve("xaero-mapsync_r-client-root.properties");
+		TILE_DATA.load(FabricLoader.getInstance().getConfigDir().resolve("xaero-mapsync_r-client-revisions-v3.properties"));
+		rootHashPath = FabricLoader.getInstance().getConfigDir().resolve("xaero-mapsync_r-client-root-v3.properties");
 		loadCompletedRootHash();
 		previousMapSyncEnabled = SharedMapClientConfig.get().mapSyncEnabled();
 		previousWaypointsEnabled = SharedMapClientConfig.get().publicWaypointsEnabled();
@@ -80,6 +82,7 @@ public final class SharedMapClient {
 			sanitizeWaypointsIfNeeded();
 			handleConfigChanges();
 			handleSyncWatchdog();
+			pollMapRootIfIdle();
 			if (++persistenceTicks >= 200) {
 				persistenceTicks = 0;
 				TILE_DATA.saveIfDirty();
@@ -150,8 +153,9 @@ public final class SharedMapClient {
 		}
 		if (!mapAdapter.apply(payload.tile())) {
 			resetMapQueues();
-			COMPLETED_MAP_ROOTS.remove(payload.tile().dimension());
-			saveCompletedRootHash();
+			if (COMPLETED_MAP_ROOTS.remove(payload.tile().dimension()) != null) {
+				saveCompletedRootHash();
+			}
 			if (mapAdapter.isAvailable()) retryMapSyncAtMillis = System.currentTimeMillis() + 2_000L;
 			return;
 		}
@@ -173,6 +177,8 @@ public final class SharedMapClient {
 			return;
 		}
 		tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
+		mapSyncIncomplete = true;
+		retryMapSyncAtMillis = System.currentTimeMillis() + 5_000L;
 		lastMapProgressMillis = System.currentTimeMillis();
 		XaeroMapsync_r.LOGGER.debug("Map tile unavailable {} {} {}: {}",
 				payload.dimension(), payload.chunkX(), payload.chunkZ(), payload.reason());
@@ -200,7 +206,7 @@ public final class SharedMapClient {
 		for (MerkleNode node : payload.nodes()) {
 			boolean changed = MERKLE.find(node).map(previous -> previous.hash() != node.hash()).orElse(true);
 			MERKLE.put(node);
-			if (!changed) {
+			if (!shouldInspectMerkleNode(node.level(), changed)) {
 				continue;
 			}
 			if (node.level() > 0) {
@@ -219,6 +225,11 @@ public final class SharedMapClient {
 		pumpMapNodeRequests();
 		enqueueTiles(changedLeaves);
 		markRootCompleteIfIdle();
+	}
+
+	static boolean shouldInspectMerkleNode(int level, boolean changed) {
+		// Unchanged leaves can still be missing locally after Xaero deferred an earlier injection.
+		return level == 0 || changed;
 	}
 
 	private static void enqueueTiles(Iterable<MapTileIndexEntry> entries) {
@@ -314,9 +325,26 @@ public final class SharedMapClient {
 		}
 		if (retryMapSyncAtMillis != 0L && now >= retryMapSyncAtMillis && connectedToSharedMapServer && mapSyncAvailable()) {
 			retryMapSyncAtMillis = 0L;
+			if (mapSyncIncomplete) {
+				resetMapQueues();
+			}
 			SharedMapNetworking.requestMapSync();
 		}
 		if (persistenceTicks % 100 == 0 && previousWaypointsEnabled) reconcileWaypoints();
+	}
+
+	private static void pollMapRootIfIdle() {
+		if (++mapRootPollTicks < 100) {
+			return;
+		}
+		mapRootPollTicks = 0;
+		if (!connectedToSharedMapServer || !previousMapSyncEnabled || !mapSyncAvailable() || currentDimension() == null) {
+			return;
+		}
+		if (tileRequestsInFlight == 0 && mapNodeRequestsInFlight == 0
+				&& TILE_REQUEST_QUEUE.isEmpty() && MAP_NODE_QUEUE.isEmpty()) {
+			SharedMapNetworking.requestMapSync();
+		}
 	}
 
 	public static int waypointCount() { return WAYPOINTS.activeCount(); }
@@ -402,11 +430,17 @@ public final class SharedMapClient {
 	}
 
 	private static void markRootCompleteIfIdle() {
-		if (mapNodeRequestsInFlight == 0 && MAP_NODE_QUEUE.isEmpty() && tileRequestsInFlight == 0 && TILE_REQUEST_QUEUE.isEmpty()
+		if (canCompleteMapRoot(mapSyncIncomplete, mapNodeRequestsInFlight, MAP_NODE_QUEUE.size(),
+				tileRequestsInFlight, TILE_REQUEST_QUEUE.size())
 				&& syncingDimension != null && COMPLETED_MAP_ROOTS.getOrDefault(syncingDimension, 0L) != MAP_TILES.rootHash()) {
 			COMPLETED_MAP_ROOTS.put(syncingDimension, MAP_TILES.rootHash());
 			saveCompletedRootHash();
 		}
+	}
+
+	static boolean canCompleteMapRoot(boolean incomplete, int nodeRequests, int queuedNodes,
+			int tileRequests, int queuedTiles) {
+		return !incomplete && nodeRequests == 0 && queuedNodes == 0 && tileRequests == 0 && queuedTiles == 0;
 	}
 
 	private static void loadCompletedRootHash() {
@@ -434,14 +468,24 @@ public final class SharedMapClient {
 		try {
 			java.nio.file.Files.createDirectories(rootHashPath.getParent());
 			try (java.io.OutputStream output = java.nio.file.Files.newOutputStream(temp)) { values.store(output, "Xaero Map Sync completed root"); }
-			try {
-				java.nio.file.Files.move(temp, rootHashPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-						java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-			} catch (java.nio.file.AtomicMoveNotSupportedException exception) {
-				java.nio.file.Files.move(temp, rootHashPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-			}
+			replaceFile(temp, rootHashPath);
 		} catch (java.io.IOException exception) {
 			XaeroMapsync_r.LOGGER.warn("Failed to save completed client map root", exception);
+		}
+	}
+
+	static void replaceFile(java.nio.file.Path temp, java.nio.file.Path target) throws java.io.IOException {
+		try {
+			java.nio.file.Files.move(temp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+					java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+		} catch (java.io.IOException atomicMoveFailure) {
+			try {
+				// Windows can reject atomic replacement of an existing file even when ordinary replacement is allowed.
+				java.nio.file.Files.move(temp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			} catch (java.io.IOException replacementFailure) {
+				replacementFailure.addSuppressed(atomicMoveFailure);
+				throw replacementFailure;
+			}
 		}
 	}
 
@@ -457,6 +501,7 @@ public final class SharedMapClient {
 		MERKLE.replace(java.util.List.of());
 		tileRequestsInFlight = 0;
 		mapNodeRequestsInFlight = 0;
+		mapSyncIncomplete = false;
 		syncingDimension = null;
 		syncingRootHash = 0L;
 	}

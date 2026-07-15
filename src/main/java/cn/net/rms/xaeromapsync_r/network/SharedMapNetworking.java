@@ -322,7 +322,10 @@ public final class SharedMapNetworking {
 				sendTileUnavailable(player, request, "Tile is deferred until its chunk is naturally loaded");
 				return;
 			}
-			SharedMapServer.tileData().put(tile);
+			if (!SharedMapServer.tileData().putSynchronously(tile)) {
+				sendTileUnavailable(player, request, "Tile persistence failed; index was not published");
+				return;
+			}
 		}
 		MapTileIndexEntry entry = SharedMapServer.mapTiles().upsert(tile);
 		// An explicit request means the client has the index entry but not the tile body.

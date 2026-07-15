@@ -91,8 +91,12 @@ public final class MapTaskScheduler {
 		if (tile == null) {
 			return false;
 		}
+		return persistThenIndex(tile, tileData, mapTiles);
+	}
+
+	static boolean persistThenIndex(MapTile tile, MapTileDataStore tileData, MapTileIndexStore mapTiles) {
+		if (!tileData.putSynchronously(tile)) return false;
 		mapTiles.upsert(tile);
-		tileData.put(tile);
 		return true;
 	}
 

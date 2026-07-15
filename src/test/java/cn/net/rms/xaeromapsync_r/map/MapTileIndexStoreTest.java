@@ -74,6 +74,11 @@ final class MapTileIndexStoreTest {
 		assertEquals(1, store.totalCount());
 	}
 
+	@Test
+	void v3IndexUsesIndependentFileName() {
+		assertEquals("map_tile_index-v3.json", MapTileIndexStore.INDEX_FILE_NAME);
+	}
+
 	private static MapTile tile(String dimension, int chunkX, int chunkZ, long contentHash) {
 		return new MapTile(dimension, chunkX, chunkZ, new int[] {1, 2, 3}, contentHash);
 	}

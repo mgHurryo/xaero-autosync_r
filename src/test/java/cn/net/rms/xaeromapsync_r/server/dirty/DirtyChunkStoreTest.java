@@ -70,6 +70,20 @@ final class DirtyChunkStoreTest {
 	}
 
 	@Test
+	void discoveredChunkIsImmediatelyStableAndIsNotQueuedTwice() {
+		DirtyChunkStore store = new DirtyChunkStore(false);
+
+		assertTrue(store.markDiscovered("minecraft:overworld", 3, -4));
+		assertFalse(store.markDiscovered("minecraft:overworld", 3, -4));
+
+		assertEquals(1, store.totalCount());
+		assertEquals(1, store.statistics().stable());
+		DirtyChunkStore.StableDirtyChunk claimed = store.claimStableDirtyChunks(1).get(0);
+		assertEquals(3, claimed.chunkX());
+		assertEquals(-4, claimed.chunkZ());
+	}
+
+	@Test
 	void concurrentClaimersNeverReceiveTheSameStableChunk() throws Exception {
 		int chunkCount = 40;
 		DirtyChunkStore store = stableStore(chunkCount);

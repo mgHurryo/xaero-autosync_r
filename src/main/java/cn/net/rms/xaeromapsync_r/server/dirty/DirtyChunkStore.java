@@ -50,6 +50,23 @@ public final class DirtyChunkStore {
 		inFlight.remove(key);
 	}
 
+	/**
+	 * Queues a newly observed chunk without the quiet-period delay used for block changes.
+	 * The chunk is already loaded and stable when exploration discovers it, so delaying it
+	 * would leave ordinary traversal absent from the shared map.
+	 */
+	public synchronized boolean markDiscovered(String dimension, int chunkX, int chunkZ) {
+		String key = key(dimension, chunkX, chunkZ);
+		if (records.containsKey(key)) {
+			return false;
+		}
+		DirtyChunkRecord record = new DirtyChunkRecord(dimension, chunkX, chunkZ, currentTick);
+		record.restore(DirtyActivityState.STABLE, currentTick, currentTick, null);
+		records.put(key, record);
+		generations.put(key, 0L);
+		return true;
+	}
+
 	public synchronized void load(MinecraftServer server) {
 		Path path = path(server);
 		records.clear();

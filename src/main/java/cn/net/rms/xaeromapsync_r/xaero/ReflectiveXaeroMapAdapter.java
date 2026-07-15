@@ -106,8 +106,10 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		if (tile.dimension() == null || tile.dimension().isBlank()) {
 			throw new IllegalArgumentException("Map tile dimension is missing");
 		}
-		if (tile.heights().length != TILE_AREA || tile.blockStateIds().length != TILE_AREA
-				|| tile.biomeIds().length != TILE_AREA || tile.lightLevels().length != TILE_AREA) {
+		if (tile.baseStateIds().length != TILE_AREA || tile.baseHeights().length != TILE_AREA
+				|| tile.topHeights().length != TILE_AREA || tile.biomeIds().length != TILE_AREA
+				|| tile.lightAbove().length != TILE_AREA || tile.glowing().length != TILE_AREA
+				|| tile.cave().length != TILE_AREA || tile.overlays().size() != TILE_AREA) {
 			throw new IllegalArgumentException("Xaero map injection requires 16x16 surface arrays");
 		}
 	}
@@ -159,6 +161,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Method setWorldInterpretationVersion;
 		private final Constructor<?> mapBlockConstructor;
 		private final Method writeBlock;
+		private final Constructor<?> overlayConstructor;
+		private final Method addOverlay;
 		private final Field biomeKeyManagerField;
 		private final Method biomeKeyGet;
 		private final Method updateSave;
@@ -178,6 +182,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			mapTileChunkClass = Class.forName("xaero.map.region.MapTileChunk", false, loader);
 			xaeroMapTileClass = Class.forName("xaero.map.region.MapTile", false, loader);
 			mapBlockClass = Class.forName("xaero.map.region.MapBlock", false, loader);
+			Class<?> overlayClass = Class.forName("xaero.map.region.Overlay", false, loader);
 			biomeKeyClass = Class.forName("xaero.map.biome.BiomeKey", false, loader);
 			Class<?> biomeKeyManagerClass = Class.forName("xaero.map.biome.BiomeKeyManager", false, loader);
 			Class<?> mapTilePoolClass = Class.forName("xaero.map.pool.MapTilePool", false, loader);
@@ -218,6 +223,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			setWorldInterpretationVersion = method(xaeroMapTileClass, "setWorldInterpretationVersion", int.class);
 			mapBlockConstructor = constructor(mapBlockClass);
 			writeBlock = method(mapBlockClass, "write", BlockState.class, int.class, int.class, biomeKeyClass, byte.class, boolean.class, boolean.class);
+			overlayConstructor = constructor(overlayClass, BlockState.class, float.class, byte.class, boolean.class);
+			addOverlay = method(mapBlockClass, "addOverlay", overlayClass);
 			biomeKeyManagerField = field(mapSaveLoadClass, "biomeKeyManager", biomeKeyManagerClass);
 			biomeKeyGet = method(biomeKeyManagerClass, biomeKeyClass, "get", String.class);
 			updateSave = method(mapSaveLoadClass, "updateSave", leveledRegionClass, long.class);
@@ -290,10 +297,13 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			Object tilePool = invoke(getTilePool, processor);
 			String xaeroDimension = (String) invoke(getCurrentDimension, processor);
 			Object xaeroTile = invoke(tilePoolGet, tilePool, xaeroDimension, source.chunkX(), source.chunkZ());
-			int[] heights = source.heights();
-			int[] stateIds = source.blockStateIds();
+			int[] baseHeights = source.baseHeights();
+			int[] topHeights = source.topHeights();
+			int[] stateIds = source.baseStateIds();
 			int[] biomeIds = source.biomeIds();
-			int[] lights = source.lightLevels();
+			byte[] lights = source.lightAbove();
+			boolean[] glowing = source.glowing();
+			boolean[] cave = source.cave();
 			Registry<Biome> biomeRegistry = minecraft.level.registryAccess().registryOrThrow(Registry.BIOME_REGISTRY);
 			for (int localZ = 0; localZ < TILE_SIDE; localZ++) {
 				for (int localX = 0; localX < TILE_SIDE; localX++) {
@@ -304,15 +314,26 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					if (state == null || biomeId == null) {
 						throw new IllegalArgumentException("Invalid surface registry ID at " + localX + "," + localZ);
 					}
-					if (lights[index] < 0 || lights[index] > 15) {
-						throw new IllegalArgumentException("Invalid light level " + lights[index] + " at " + localX + "," + localZ);
+					int light = Byte.toUnsignedInt(lights[index]);
+					if (light > 15) {
+						throw new IllegalArgumentException("Invalid light level " + light + " at " + localX + "," + localZ);
 					}
 					Object biomeKey = invoke(biomeKeyGet, biomeKeyManager, biomeId.toString());
 					if (biomeKey == null) {
 						throw new IllegalStateException("Xaero did not create a biome key for " + biomeId);
 					}
 					Object block = construct(mapBlockConstructor);
-					invoke(writeBlock, block, state, heights[index], heights[index], biomeKey, (byte) lights[index], false, false);
+					for (MapTile.Overlay sourceOverlay : source.overlaysAt(index)) {
+						BlockState overlayState = Block.stateById(sourceOverlay.blockStateId());
+						if (overlayState == null) {
+							throw new IllegalArgumentException("Invalid overlay registry ID at " + localX + "," + localZ);
+						}
+						Object overlay = construct(overlayConstructor, overlayState, sourceOverlay.transparency(),
+								sourceOverlay.lightAbove(), sourceOverlay.glowing());
+						invoke(addOverlay, block, overlay);
+					}
+					invoke(writeBlock, block, state, baseHeights[index], topHeights[index], biomeKey, lights[index],
+							glowing[index], cave[index]);
 					invoke(setBlock, xaeroTile, localX, localZ, block);
 				}
 			}

@@ -19,6 +19,7 @@ public final class SharedMapConfig {
 	public static void register() {
 		Path path = FabricLoader.getInstance().getConfigDir().resolve(FILE_NAME);
 		load(path);
+		VALUES.setProperty("map.format.version", Integer.toString(SharedMapProtocolDefaults.MAP_FORMAT_VERSION));
 		save(path);
 	}
 
@@ -27,7 +28,7 @@ public final class SharedMapConfig {
 	}
 
 	public static int mapFormatVersion() {
-		return intValue("map.format.version", SharedMapProtocolDefaults.MAP_FORMAT_VERSION);
+		return SharedMapProtocolDefaults.MAP_FORMAT_VERSION;
 	}
 
 	public static int maxPacketBytes() {

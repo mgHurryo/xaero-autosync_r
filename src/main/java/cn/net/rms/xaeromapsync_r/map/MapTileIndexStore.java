@@ -23,6 +23,7 @@ import net.minecraft.world.level.storage.LevelResource;
 
 public final class MapTileIndexStore {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+	static final String INDEX_FILE_NAME = "map_tile_index-v3.json";
 	private final Map<String, MapTileIndexEntry> tiles = new LinkedHashMap<>();
 	private long nextRevision = 1L;
 
@@ -140,7 +141,7 @@ public final class MapTileIndexStore {
 	}
 
 	private static Path path(MinecraftServer server) {
-		return server.getWorldPath(LevelResource.ROOT).resolve("xaero-mapsync_r").resolve("map_tile_index.json");
+		return server.getWorldPath(LevelResource.ROOT).resolve("xaero-mapsync_r").resolve(INDEX_FILE_NAME);
 	}
 
 	private static final class MapTileIndexFile {

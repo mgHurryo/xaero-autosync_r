@@ -137,6 +137,17 @@ final class DirtyChunkProcessorTest {
 		assertThrows(IllegalArgumentException.class, () -> new DirtyChunkProcessor(null, chunk -> true, chunk -> true));
 	}
 
+	@Test
+	void sharedDeadlineStopsAdditionalRendersWithinOneScan() {
+		DirtyChunkStore store = stableStore(2);
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> true);
+
+		DirtyChunkProcessor.TickResult result = processor.processTick(2, 2, () -> false);
+
+		assertEquals(1, result.completed());
+		assertEquals(1, result.deferred());
+	}
+
 	private static DirtyChunkStore stableStore(int count) {
 		DirtyChunkStore store = new DirtyChunkStore(false);
 		for (int index = 0; index < count; index++) {

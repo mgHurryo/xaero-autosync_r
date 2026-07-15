@@ -78,6 +78,17 @@ final class TransferAssemblerTest {
 		assertThrows(IllegalStateException.class, () -> assembler.accept(parts.get(0), 16L));
 	}
 
+	@Test
+	void staleTimeoutSampleDoesNotCrashConcurrentReception() {
+		List<TransferPartPayload> parts = TransferFragmenter.fragment(UUID.randomUUID(),
+				new byte[TransferPartPayload.MAX_PART_BYTES + 1]);
+		TransferAssembler assembler = new TransferAssembler(10L);
+		assembler.accept(parts.get(0), 20L);
+
+		assertEquals(TransferAssembler.Status.RECEIVING, assembler.checkTimeout(19L));
+		assertEquals(TransferAssembler.Status.TIMED_OUT, assembler.checkTimeout(30L));
+	}
+
 	private static byte[] patternedBytes(int length) {
 		byte[] data = new byte[length];
 		for (int index = 0; index < data.length; index++) {

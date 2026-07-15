@@ -2,6 +2,7 @@ package cn.net.rms.xaeromapsync_r.server.dirty;
 
 import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
 public final class DirtyChunkProcessor {
 	private final DirtyChunkStore store;
@@ -28,8 +29,15 @@ public final class DirtyChunkProcessor {
 	}
 
 	public synchronized TickResult processTick(int renderBudget, int scanBudget) {
+		return processTick(renderBudget, scanBudget, () -> true);
+	}
+
+	public synchronized TickResult processTick(int renderBudget, int scanBudget, BooleanSupplier canContinueRendering) {
 		if (renderBudget < 0 || scanBudget < 0) {
 			throw new IllegalArgumentException("Dirty chunk budgets must not be negative");
+		}
+		if (canContinueRendering == null) {
+			throw new IllegalArgumentException("Dirty chunk render deadline is required");
 		}
 		if (renderBudget == 0 || scanBudget == 0) {
 			return recordResult(renderBudget, List.of(), 0, 0, 0, 0);
@@ -42,7 +50,7 @@ public final class DirtyChunkProcessor {
 		int renderAttempts = 0;
 
 		for (DirtyChunkStore.StableDirtyChunk chunk : chunks) {
-			if (renderAttempts >= renderBudget) {
+			if (renderAttempts >= renderBudget || renderAttempts > 0 && !canContinueRendering.getAsBoolean()) {
 				if (store.defer(chunk)) {
 					deferredThisTick++;
 				} else {

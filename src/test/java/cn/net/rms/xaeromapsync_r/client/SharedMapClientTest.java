@@ -41,6 +41,20 @@ final class SharedMapClientTest {
 	}
 
 	@Test
+	void watchdogKeepsTilesWaitingForXaeroAndResetsDeadNetworkRequests() {
+		assertFalse(SharedMapClient.shouldResetMapSync(false, 60_000L));
+		assertFalse(SharedMapClient.shouldResetMapSync(true, 29_999L));
+		assertTrue(SharedMapClient.shouldResetMapSync(true, 30_000L));
+	}
+
+	@Test
+	void tileApplyRetriesBackOffWithoutGrowingUnbounded() {
+		assertEquals(250L, SharedMapClient.tileApplyRetryMillis(0));
+		assertEquals(2_000L, SharedMapClient.tileApplyRetryMillis(3));
+		assertEquals(5_000L, SharedMapClient.tileApplyRetryMillis(20));
+	}
+
+	@Test
 	void replacesExistingRootStateFile() throws Exception {
 		Path target = tempDirectory.resolve("root.properties");
 		Path temp = tempDirectory.resolve("root.properties.tmp");

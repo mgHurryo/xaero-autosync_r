@@ -19,4 +19,5 @@ final class MapTaskSchedulerTest {
 		assertFalse(MapTaskScheduler.persistThenIndex(tile, tileData, index));
 		assertEquals(0, index.totalCount());
 	}
+
 }

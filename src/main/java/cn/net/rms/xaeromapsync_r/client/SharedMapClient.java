@@ -48,10 +48,11 @@ public final class SharedMapClient {
 	private static final ArrayDeque<PendingTileApply> TILE_APPLY_QUEUE = new ArrayDeque<>();
 	private static final Set<String> PENDING_TILE_APPLIES = new HashSet<>();
 	private static final ArrayDeque<MerkleNodeAddress> MAP_NODE_QUEUE = new ArrayDeque<>();
-	private static final int MAX_PENDING_TILE_APPLIES = 64;
-	private static final int MAX_TILE_APPLIES_PER_TICK = 8;
-	private static final long TILE_APPLY_BUDGET_NANOS = 4_000_000L;
+	private static final int MAX_PENDING_TILE_APPLIES = 1024;
+	private static final int MAX_TILE_APPLIES_PER_TICK = 24;
+	private static final long TILE_APPLY_BUDGET_NANOS = 8_000_000L;
 	private static final long TILE_APPLY_RETRY_MILLIS = 250L;
+	private static final long MAX_TILE_APPLY_RETRY_MILLIS = 5_000L;
 	private static int tileRequestsInFlight;
 	private static XaeroWaypointAdapter waypointAdapter;
 	private static XaeroMapAdapter mapAdapter;
@@ -79,7 +80,8 @@ public final class SharedMapClient {
 		mapAdapter = new ReflectiveXaeroMapAdapter();
 		TILE_DATA.load(FabricLoader.getInstance().getConfigDir().resolve("xaero-mapsync_r-client-revisions-v3.properties"));
 		rootHashPath = FabricLoader.getInstance().getConfigDir().resolve("xaero-mapsync_r-client-root-v3.properties");
-		loadCompletedRootHash();
+		// A root hash without the matching Merkle/index snapshot cannot prove that the
+		// persisted revision cache is complete. Revalidate all leaves once per process.
 		previousMapSyncEnabled = SharedMapClientConfig.get().mapSyncEnabled();
 		previousWaypointsEnabled = SharedMapClientConfig.get().publicWaypointsEnabled();
 		previousDimension = currentDimension();
@@ -197,7 +199,7 @@ public final class SharedMapClient {
 				completeTileApply(pending);
 			} else if (result == XaeroMapAdapter.ApplyResult.RETRY_LATER) {
 				TILE_APPLY_QUEUE.addLast(new PendingTileApply(pending.key, pending.payload,
-						now + TILE_APPLY_RETRY_MILLIS, pending.attempts + 1));
+						now + tileApplyRetryMillis(pending.attempts), pending.attempts + 1));
 			} else {
 				resetMapQueues();
 				return;
@@ -205,6 +207,11 @@ public final class SharedMapClient {
 			if (System.nanoTime() >= deadline) break;
 		}
 		pumpTileRequests();
+	}
+
+	static long tileApplyRetryMillis(int attempts) {
+		int shift = Math.min(Math.max(attempts, 0), 5);
+		return Math.min(MAX_TILE_APPLY_RETRY_MILLIS, TILE_APPLY_RETRY_MILLIS << shift);
 	}
 
 	private static void completeTileApply(PendingTileApply pending) {
@@ -370,8 +377,8 @@ public final class SharedMapClient {
 
 	private static void handleSyncWatchdog() {
 		long now = System.currentTimeMillis();
-		boolean waiting = tileRequestsInFlight > 0 || mapNodeRequestsInFlight > 0 || !TILE_APPLY_QUEUE.isEmpty();
-		if (waiting && now - lastMapProgressMillis >= 30_000L) {
+		boolean networkWaiting = tileRequestsInFlight > 0 || mapNodeRequestsInFlight > 0;
+		if (shouldResetMapSync(networkWaiting, now - lastMapProgressMillis)) {
 			resetMapQueues();
 			retryMapSyncAtMillis = now + 250L;
 		}
@@ -383,6 +390,12 @@ public final class SharedMapClient {
 			SharedMapNetworking.requestMapSync();
 		}
 		if (persistenceTicks % 100 == 0 && previousWaypointsEnabled) reconcileWaypoints();
+	}
+
+	static boolean shouldResetMapSync(boolean networkWaiting, long millisWithoutProgress) {
+		// Xaero can legitimately defer a whole region while it loads or saves. Those downloaded
+		// tiles must stay queued; only a network request that stopped responding warrants a reset.
+		return networkWaiting && millisWithoutProgress >= 30_000L;
 	}
 
 	private static void pollMapRootIfIdle() {
@@ -494,20 +507,6 @@ public final class SharedMapClient {
 			int tileRequests, int queuedTiles, int pendingApplies) {
 		return !incomplete && nodeRequests == 0 && queuedNodes == 0 && tileRequests == 0 && queuedTiles == 0
 				&& pendingApplies == 0;
-	}
-
-	private static void loadCompletedRootHash() {
-		if (rootHashPath == null || !java.nio.file.Files.isRegularFile(rootHashPath)) return;
-		java.util.Properties values = new java.util.Properties();
-		try (java.io.InputStream input = java.nio.file.Files.newInputStream(rootHashPath)) {
-			values.load(input);
-			for (String key : values.stringPropertyNames()) {
-				String dimension = new String(java.util.Base64.getUrlDecoder().decode(key), java.nio.charset.StandardCharsets.UTF_8);
-				COMPLETED_MAP_ROOTS.put(dimension, Long.parseUnsignedLong(values.getProperty(key)));
-			}
-		} catch (java.io.IOException | RuntimeException exception) {
-			XaeroMapsync_r.LOGGER.warn("Failed to load completed client map root", exception);
-		}
 	}
 
 	private static void saveCompletedRootHash() {

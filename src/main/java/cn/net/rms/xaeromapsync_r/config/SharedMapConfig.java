@@ -71,6 +71,14 @@ public final class SharedMapConfig {
 		return intValue("tasks.dirty_drain_budget_per_tick", 4);
 	}
 
+	public static int maxTileRendersPerTick() {
+		return positiveIntValue("tasks.max_tile_renders_per_tick", 8);
+	}
+
+	public static int mapRenderBudgetMillis() {
+		return positiveIntValue("tasks.map_render_budget_ms", 10);
+	}
+
 	public static int stormBlockChangesThreshold() { return positiveIntValue("activity.storm_block_changes_per_tick", 4096); }
 	public static int stormDirtyChunksThreshold() { return positiveIntValue("activity.storm_dirty_chunks_per_tick", 16); }
 	public static int stormTntEntitiesThreshold() { return positiveIntValue("activity.storm_tnt_entities_per_tick", 64); }
@@ -147,6 +155,8 @@ public final class SharedMapConfig {
 		defaults.setProperty("tasks.dirty_chunks_per_tick", "1");
 		defaults.setProperty("tasks.dirty_chunk_scan_per_tick", "64");
 		defaults.setProperty("tasks.dirty_drain_budget_per_tick", "4");
+		defaults.setProperty("tasks.max_tile_renders_per_tick", "8");
+		defaults.setProperty("tasks.map_render_budget_ms", "10");
 		defaults.setProperty("activity.storm_block_changes_per_tick", "4096");
 		defaults.setProperty("activity.storm_dirty_chunks_per_tick", "16");
 		defaults.setProperty("activity.storm_tnt_entities_per_tick", "64");

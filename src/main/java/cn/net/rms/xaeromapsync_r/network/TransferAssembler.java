@@ -92,7 +92,9 @@ public final class TransferAssembler {
 
 	public Status checkTimeout(long nowMillis) {
 		if (status == Status.RECEIVING) {
-			validateClock(nowMillis);
+			// The client tick can capture its timestamp just before the network thread records
+			// a newer part. Skipping that stale timeout sample avoids a false clock rollback.
+			if (nowMillis < lastActivityMillis) return status;
 			if (nowMillis - lastActivityMillis >= timeoutMillis) {
 				status = Status.TIMED_OUT;
 				releaseBuffer();

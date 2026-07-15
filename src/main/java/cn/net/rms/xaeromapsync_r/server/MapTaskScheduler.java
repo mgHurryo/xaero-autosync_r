@@ -63,9 +63,15 @@ public final class MapTaskScheduler {
 		activeServer = server;
 		long taskStartedNanos = System.nanoTime();
 		try {
-			int budget = drainRequested ? SharedMapConfig.dirtyDrainBudgetPerTick() : SharedMapConfig.dirtyChunksPerTick();
-			int scanBudget = Math.max(budget, SharedMapConfig.dirtyChunkScanPerTick());
-			completedTiles += processor.processTick(budget, scanBudget).completed();
+			int configuredBudget = drainRequested
+					? SharedMapConfig.dirtyDrainBudgetPerTick()
+					: SharedMapConfig.dirtyChunksPerTick();
+			int renderLimit = Math.max(configuredBudget, SharedMapConfig.maxTileRendersPerTick());
+			int scanBudget = Math.max(renderLimit, SharedMapConfig.dirtyChunkScanPerTick());
+			long deadlineNanos = taskStartedNanos + SharedMapConfig.mapRenderBudgetMillis() * 1_000_000L;
+			DirtyChunkProcessor.TickResult result = processor.processTick(renderLimit, scanBudget,
+					() -> System.nanoTime() < deadlineNanos);
+			completedTiles += result.completed();
 			drainRequested = false;
 		} finally {
 			lastTaskMillis = (System.nanoTime() - taskStartedNanos) / 1_000_000.0D;

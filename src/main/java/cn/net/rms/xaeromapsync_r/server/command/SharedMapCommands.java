@@ -4,6 +4,7 @@ import static net.minecraft.commands.Commands.literal;
 
 import cn.net.rms.xaeromapsync_r.map.MapTileDebugRenderer;
 import cn.net.rms.xaeromapsync_r.server.SharedMapServer;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.fabricmc.fabric.api.command.v1.CommandRegistrationCallback;
 import net.minecraft.network.chat.TextComponent;
 
@@ -41,6 +42,14 @@ public final class SharedMapCommands {
 					context.getSource().sendSuccess(new TextComponent("Flushed stable dirty chunks: " + flushed), true);
 					return flushed;
 				}))
+				.then(literal("bandwidth")
+						.then(net.minecraft.commands.Commands.argument("bytesPerTick", IntegerArgumentType.integer(1024, 1048576))
+								.executes(context -> {
+									int bytesPerTick = IntegerArgumentType.getInteger(context, "bytesPerTick");
+									SharedMapServer.networkBudget().setBytesPerPlayerPerTick(bytesPerTick);
+									context.getSource().sendSuccess(new TextComponent("Shared map per-player network budget set to " + bytesPerTick + " bytes/tick."), true);
+									return bytesPerTick;
+								})))
 				.then(literal("rebuild-loaded").executes(context -> {
 					int generated = MapTileDebugRenderer.renderAndIndexLoadedPlayerChunks(context.getSource().getServer(), SharedMapServer.mapTiles());
 					context.getSource().sendSuccess(new TextComponent("Generated debug tiles for loaded chunks: " + generated), true);
@@ -55,6 +64,7 @@ public final class SharedMapCommands {
 				+ ", rootHash=" + Long.toUnsignedString(SharedMapServer.mapTiles().rootHash())
 				+ ", dirtyChunks=" + SharedMapServer.dirtyChunks().totalCount()
 				+ ", dirtyState=" + SharedMapServer.dirtyChunks().stateSummary()
+				+ ", bandwidthBytesPerTick=" + SharedMapServer.networkBudget().bytesPerPlayerPerTick()
 				+ ", publicWaypoints=" + SharedMapServer.waypoints().activeCount()
 				+ ", deletedWaypoints=" + SharedMapServer.waypoints().deletedCount();
 	}

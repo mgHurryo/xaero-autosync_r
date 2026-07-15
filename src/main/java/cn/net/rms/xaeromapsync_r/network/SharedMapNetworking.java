@@ -2,6 +2,10 @@ package cn.net.rms.xaeromapsync_r.network;
 
 import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 import cn.net.rms.xaeromapsync_r.client.SharedMapClient;
+import cn.net.rms.xaeromapsync_r.config.SharedMapConfig;
+import cn.net.rms.xaeromapsync_r.map.MapTile;
+import cn.net.rms.xaeromapsync_r.map.MapTileDebugRenderer;
+import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
 import cn.net.rms.xaeromapsync_r.server.SharedMapServer;
 import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
 import io.netty.buffer.Unpooled;
@@ -23,7 +27,10 @@ public final class SharedMapNetworking {
 	public static final net.minecraft.resources.ResourceLocation C2S_WAYPOINT_DELETE = XaeroMapsync_r.id("c2s_waypoint_delete");
 	public static final net.minecraft.resources.ResourceLocation C2S_WAYPOINT_SNAPSHOT_REQUEST = XaeroMapsync_r.id("c2s_waypoint_snapshot_request");
 	public static final net.minecraft.resources.ResourceLocation C2S_MAP_ROOT_HASH = XaeroMapsync_r.id("c2s_map_root_hash");
+	public static final net.minecraft.resources.ResourceLocation C2S_TILE_REQUEST = XaeroMapsync_r.id("c2s_tile_request");
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_INDEX_SNAPSHOT = XaeroMapsync_r.id("s2c_map_index_snapshot");
+	public static final net.minecraft.resources.ResourceLocation S2C_MAP_MERKLE_SNAPSHOT = XaeroMapsync_r.id("s2c_map_merkle_snapshot");
+	public static final net.minecraft.resources.ResourceLocation S2C_TILE_DATA = XaeroMapsync_r.id("s2c_tile_data");
 	public static final net.minecraft.resources.ResourceLocation S2C_WAYPOINT_SNAPSHOT = XaeroMapsync_r.id("s2c_waypoint_snapshot");
 	public static final net.minecraft.resources.ResourceLocation S2C_WAYPOINT_UPSERT = XaeroMapsync_r.id("s2c_waypoint_upsert");
 	public static final net.minecraft.resources.ResourceLocation S2C_WAYPOINT_DELETE = XaeroMapsync_r.id("s2c_waypoint_delete");
@@ -48,6 +55,10 @@ public final class SharedMapNetworking {
 		ServerPlayNetworking.registerGlobalReceiver(C2S_MAP_ROOT_HASH, (server, player, handler, buffer, responseSender) -> {
 			MapRootHashPayload payload = MapRootHashPayload.read(buffer);
 			server.execute(() -> sendMapIndexIfChanged(player, payload));
+		});
+		ServerPlayNetworking.registerGlobalReceiver(C2S_TILE_REQUEST, (server, player, handler, buffer, responseSender) -> {
+			TileRequestPayload payload = TileRequestPayload.read(buffer);
+			server.execute(() -> sendTileDataIfAvailable(player, payload));
 		});
 		ServerPlayNetworking.registerGlobalReceiver(C2S_WAYPOINT_CREATE, (server, player, handler, buffer, responseSender) -> {
 			WaypointCreatePayload payload = WaypointCreatePayload.read(buffer);
@@ -99,6 +110,21 @@ public final class SharedMapNetworking {
 			MapTileIndexSnapshotPayload payload = MapTileIndexSnapshotPayload.read(buffer);
 			client.execute(() -> SharedMapClient.handleMapTileIndexSnapshot(payload));
 		});
+		ClientPlayNetworking.registerGlobalReceiver(S2C_MAP_MERKLE_SNAPSHOT, (client, handler, buffer, responseSender) -> {
+			MapMerkleSnapshotPayload payload = MapMerkleSnapshotPayload.read(buffer);
+			client.execute(() -> SharedMapClient.handleMerkleSnapshot(payload));
+		});
+		ClientPlayNetworking.registerGlobalReceiver(S2C_TILE_DATA, (client, handler, buffer, responseSender) -> {
+			TileDataPayload payload = TileDataPayload.read(buffer);
+			client.execute(() -> SharedMapClient.handleTileData(payload));
+		});
+	}
+
+	@Environment(EnvType.CLIENT)
+	public static void requestTile(MapTileIndexEntry entry) {
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		new TileRequestPayload(entry.dimension(), entry.chunkX(), entry.chunkZ(), entry.revision()).write(buffer);
+		ClientPlayNetworking.send(C2S_TILE_REQUEST, buffer);
 	}
 
 	@Environment(EnvType.CLIENT)
@@ -128,6 +154,45 @@ public final class SharedMapNetworking {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		payload.write(buffer);
 		ServerPlayNetworking.send(player, S2C_MAP_INDEX_SNAPSHOT, buffer);
+		MapMerkleSnapshotPayload merklePayload = new MapMerkleSnapshotPayload(SharedMapServer.mapTiles().merkleSnapshot());
+		FriendlyByteBuf merkleBuffer = PacketByteBufs.create();
+		merklePayload.write(merkleBuffer);
+		if (merkleBuffer.readableBytes() <= SharedMapConfig.maxPacketBytes()) {
+			ServerPlayNetworking.send(player, S2C_MAP_MERKLE_SNAPSHOT, merkleBuffer);
+		}
+	}
+
+	private static void sendTileDataIfAvailable(net.minecraft.server.level.ServerPlayer player, TileRequestPayload request) {
+		if (!SharedMapServer.exploredChunks().isExplored(request.dimension(), request.chunkX(), request.chunkZ())) {
+			sendWaypointError(player, "Tile is not explored");
+			return;
+		}
+		net.minecraft.server.level.ServerLevel level = player.getServer().getLevel(net.minecraft.resources.ResourceKey.create(net.minecraft.core.Registry.DIMENSION_REGISTRY, new net.minecraft.resources.ResourceLocation(request.dimension())));
+		if (level == null) {
+			sendWaypointError(player, "Tile dimension is not loaded");
+			return;
+		}
+		MapTile tile = MapTileDebugRenderer.renderIfLoaded(level, request.chunkX(), request.chunkZ());
+		if (tile == null) {
+			sendWaypointError(player, "Tile chunk is not currently loaded");
+			return;
+		}
+		MapTileIndexEntry entry = SharedMapServer.mapTiles().upsert(tile);
+		if (entry.revision() <= request.knownRevision()) {
+			return;
+		}
+		TileDataPayload payload = TileDataPayload.fromTile(tile, entry.revision(), SharedMapConfig.compression());
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		payload.write(buffer);
+		if (buffer.readableBytes() > SharedMapConfig.maxPacketBytes()) {
+			sendWaypointError(player, "Tile payload exceeds max packet size");
+			return;
+		}
+		if (!SharedMapServer.networkBudget().trySpend(player.getUUID(), buffer.readableBytes())) {
+			sendWaypointError(player, "Tile transfer is rate limited");
+			return;
+		}
+		ServerPlayNetworking.send(player, S2C_TILE_DATA, buffer);
 	}
 
 	private static void handleWaypointCreate(net.minecraft.server.level.ServerPlayer player, WaypointCreatePayload payload) {

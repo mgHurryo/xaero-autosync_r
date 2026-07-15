@@ -21,6 +21,7 @@ public final class SharedMapServer {
 	private static final ExploredChunkStore EXPLORED_CHUNKS = new ExploredChunkStore();
 	private static final DirtyChunkStore DIRTY_CHUNKS = new DirtyChunkStore();
 	private static final MapTileIndexStore MAP_TILES = new MapTileIndexStore();
+	private static final NetworkBudgetTracker NETWORK_BUDGET = new NetworkBudgetTracker();
 
 	private SharedMapServer() {
 	}
@@ -91,5 +92,9 @@ public final class SharedMapServer {
 
 	public static MapTileIndexStore mapTiles() {
 		return MAP_TILES;
+	}
+
+	public static NetworkBudgetTracker networkBudget() {
+		return NETWORK_BUDGET;
 	}
 }

@@ -34,6 +34,10 @@ public final class SharedMapConfig {
 		return intValue("network.max_packet_bytes", SharedMapProtocolDefaults.MAX_PACKET_BYTES);
 	}
 
+	public static int maxTileRequestsPerSnapshot() {
+		return intValue("network.max_tile_requests_per_snapshot", 16);
+	}
+
 	public static String compression() {
 		return VALUES.getProperty("network.compression", SharedMapProtocolDefaults.COMPRESSION);
 	}
@@ -77,6 +81,7 @@ public final class SharedMapConfig {
 		defaults.setProperty("xaero.adapter.version", SharedMapProtocolDefaults.XAERO_ADAPTER_VERSION);
 		defaults.setProperty("network.compression", SharedMapProtocolDefaults.COMPRESSION);
 		defaults.setProperty("network.max_packet_bytes", Integer.toString(SharedMapProtocolDefaults.MAX_PACKET_BYTES));
+		defaults.setProperty("network.max_tile_requests_per_snapshot", "16");
 		defaults.setProperty("exploration.auto_view_distance", "true");
 		defaults.setProperty("exploration.edge_chunk_margin", "1");
 		defaults.setProperty("tasks.normal_tick_budget_ms", "2");

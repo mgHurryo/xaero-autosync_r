@@ -94,6 +94,10 @@ public final class MapTileIndexStore {
 		return Collections.unmodifiableCollection(tiles.values());
 	}
 
+	public synchronized Collection<MerkleNode> merkleSnapshot() {
+		return MerkleTreeBuilder.build(tiles.values());
+	}
+
 	private static String key(String dimension, int chunkX, int chunkZ) {
 		return dimension + ":" + ChunkPos.asLong(chunkX, chunkZ);
 	}

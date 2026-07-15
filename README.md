@@ -47,6 +47,7 @@
   - `/sharedmap save` 保存当前服务端状态
   - `/sharedmap pause` / `/sharedmap resume` 暂停或恢复重型同步任务
   - `/sharedmap flush` 清理已稳定的脏区块记录
+  - `/sharedmap bandwidth <bytesPerTick>` 调整单玩家每 Tick 网络预算
   - `/sharedmap rebuild-loaded` 只对在线玩家所在的已加载区块生成调试 tile 索引
   - 公共路径点已具备数据模型、revision 字段和删除墓碑字段
   - 服务端停止时会保存公共路径点索引、基础探索索引、脏区块索引和地图 tile 索引
@@ -74,7 +75,19 @@
   - `/sharedmap rebuild-loaded` 可从已加载区块生成 16x16 高度调试 tile
   - tile 索引保存 `contentHash`、独立 `revision` 和更新时间
   - 服务端维护 root hash，客户端可通过 `C2S_MAP_ROOT_HASH` 请求差异清单
-  - 当前只同步 tile 索引清单，不同步完整地图像素或 Xaero 缓存
+  - 服务端可下发 Merkle 摘要快照，客户端维护内存摘要缓存
+  - 客户端可按缺失 revision 请求 `C2S_TILE_REQUEST`
+  - 服务端只在区块已探索且当前自然加载时返回 `S2C_TILE_DATA`
+  - 当前 tile 内容是 16x16 高度调试数据，不是真实 Xaero 地图像素或缓存
+
+- **网络保护**
+  - tile 数据使用 zlib 压缩，包大小受 `network.max_packet_bytes` 限制
+  - 单玩家 tile 发送受每 Tick 字节预算限制
+  - 已定义 `TRANSFER_PART` / `TRANSFER_ACK` payload，后续可用于大对象分片和断点续传
+
+- **测试覆盖**
+  - 已添加 JUnit 5 单元测试
+  - 覆盖哈希稳定性、路径点校验、脏区块状态转换、tile index revision/rootHash 行为
 
 ## 本地构建命令
 
@@ -107,11 +120,11 @@ build/libs/
 
 以下内容是计划方向，当前尚未实现：
 
-- 共享地图瓦片生成、存储和同步
+- 真实共享地图像素瓦片生成、存储和同步
 - 真实 Xaero 地图像素/缓存写入
 - 地图级探索位图和完整客户端增量同步
-- 完整 Merkle 分层哈希树和逐层差异比较
-- 地图数据压缩、分片、断点续传和带宽限速传输
+- 基于 Merkle 的逐层按需差异请求
+- 分片传输的调度器、ACK 重传和断点续传落地
 - 公共路径点客户端管理界面和 Xaero 导入/移除
 - 客户端管理界面
 - Xaero 地图缓存写入、路径点导入或自动刷新

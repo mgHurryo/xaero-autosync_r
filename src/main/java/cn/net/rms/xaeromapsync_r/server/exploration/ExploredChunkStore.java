@@ -76,6 +76,11 @@ public final class ExploredChunkStore {
 				.add(ChunkPos.asLong(chunkX, chunkZ));
 	}
 
+	public synchronized boolean isExplored(String dimension, int chunkX, int chunkZ) {
+		Set<Long> chunks = chunksByDimension.get(dimension);
+		return chunks != null && chunks.contains(ChunkPos.asLong(chunkX, chunkZ));
+	}
+
 	public synchronized int totalCount() {
 		int count = 0;
 		for (Set<Long> chunks : chunksByDimension.values()) {

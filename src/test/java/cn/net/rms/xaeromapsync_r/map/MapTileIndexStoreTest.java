@@ -17,7 +17,7 @@ final class MapTileIndexStoreTest {
 		assertEquals(1L, entry.revision());
 		assertEquals(100L, entry.contentHash());
 		assertEquals(1, store.totalCount());
-		assertEquals(MapTileHasher.combine(0L, 100L, 1L), store.rootHash());
+		assertEquals(MerkleTreeBuilder.rootHash(store.merkleSnapshot()), store.rootHash());
 	}
 
 	@Test
@@ -47,20 +47,21 @@ final class MapTileIndexStoreTest {
 		assertEquals(2L, second.revision());
 		assertEquals(200L, second.contentHash());
 		assertEquals(1, store.totalCount());
-		assertEquals(MapTileHasher.combine(0L, 200L, 2L), store.rootHash());
+		assertEquals(MerkleTreeBuilder.rootHash(store.merkleSnapshot()), store.rootHash());
 		assertNotEquals(firstRootHash, store.rootHash());
 	}
 
 	@Test
-	void rootHashIncludesInsertionOrderContentHashAndRevision() {
+	void rootHashIsDeterministicAndIndependentOfInsertionOrder() {
 		MapTileIndexStore store = new MapTileIndexStore();
+		MapTileIndexStore reverse = new MapTileIndexStore();
 
 		store.upsert(tile("minecraft:overworld", 0, 0, 11L));
 		store.upsert(tile("minecraft:the_nether", -1, 4, 22L));
+		reverse.upsert(tile("minecraft:the_nether", -1, 4, 22L));
+		reverse.upsert(tile("minecraft:overworld", 0, 0, 11L));
 
-		long expected = MapTileHasher.combine(0L, 11L, 1L);
-		expected = MapTileHasher.combine(expected, 22L, 2L);
-		assertEquals(expected, store.rootHash());
+		assertEquals(store.rootHash(), reverse.rootHash());
 	}
 
 	@Test

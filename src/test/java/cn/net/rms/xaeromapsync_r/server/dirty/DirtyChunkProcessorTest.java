@@ -1,0 +1,128 @@
+package cn.net.rms.xaeromapsync_r.server.dirty;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import net.minecraft.core.BlockPos;
+import org.junit.jupiter.api.Test;
+
+final class DirtyChunkProcessorTest {
+	@Test
+	void successfulRecalculationConfirmsAndRemovesChunk() {
+		DirtyChunkStore store = stableStore(1);
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> true);
+
+		DirtyChunkProcessor.TickResult result = processor.processTick(1);
+
+		assertEquals(1, result.claimed());
+		assertEquals(1, result.completed());
+		assertEquals(0, store.totalCount());
+		assertEquals(1, processor.statistics().completed());
+	}
+
+	@Test
+	void unloadedChunkIsDeferredWithoutCallingRecalculator() {
+		DirtyChunkStore store = stableStore(1);
+		AtomicInteger recalculations = new AtomicInteger();
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> false, chunk -> {
+			recalculations.incrementAndGet();
+			return true;
+		});
+
+		DirtyChunkProcessor.TickResult result = processor.processTick(1);
+
+		assertEquals(1, result.deferred());
+		assertEquals(0, recalculations.get());
+		assertEquals(1, store.totalCount());
+		assertEquals(0, store.statistics().inFlight());
+	}
+
+	@Test
+	void deferredUnloadedChunkDoesNotStarveLaterLoadedChunk() {
+		DirtyChunkStore store = stableStore(2);
+		List<Integer> recalculated = new ArrayList<>();
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(
+				store,
+				chunk -> chunk.chunkX() == 1,
+				chunk -> {
+					recalculated.add(chunk.chunkX());
+					return true;
+				});
+
+		assertEquals(1, processor.processTick(1).deferred());
+		assertEquals(1, processor.processTick(1).completed());
+
+		assertEquals(List.of(1), recalculated);
+		assertEquals(1, store.totalCount());
+	}
+
+	@Test
+	void failedAndExceptionalRecalculationsRemainQueued() {
+		DirtyChunkStore store = stableStore(2);
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> {
+			if (chunk.chunkX() == 0) {
+				return false;
+			}
+			throw new IllegalStateException("recalculation failed");
+		});
+
+		DirtyChunkProcessor.TickResult result = processor.processTick(2);
+
+		assertEquals(2, result.failed());
+		assertEquals(2, store.totalCount());
+		assertEquals(2, store.statistics().queuedStable());
+	}
+
+	@Test
+	void loadedProbeExceptionIsCountedAndRetained() {
+		DirtyChunkStore store = stableStore(1);
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> {
+			throw new IllegalStateException("loaded probe failed");
+		}, chunk -> true);
+
+		DirtyChunkProcessor.TickResult result = processor.processTick(1);
+
+		assertEquals(1, result.failed());
+		assertEquals(1, store.totalCount());
+		assertEquals(0, store.statistics().inFlight());
+	}
+
+	@Test
+	void dirtyChangeDuringRecalculationMakesSuccessConfirmationStale() {
+		DirtyChunkStore store = stableStore(1);
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> {
+			store.markDirty(chunk.dimension(), new BlockPos(chunk.chunkX() << 4, 64, chunk.chunkZ() << 4));
+			return true;
+		});
+
+		DirtyChunkProcessor.TickResult result = processor.processTick(1);
+
+		assertEquals(1, result.stale());
+		assertEquals(0, result.completed());
+		assertEquals(1, store.totalCount());
+		assertEquals(1, store.statistics().active());
+	}
+
+	@Test
+	void rejectsNegativeBudgetAndMissingDependencies() {
+		DirtyChunkStore store = stableStore(1);
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> true);
+
+		assertThrows(IllegalArgumentException.class, () -> processor.processTick(-1));
+		assertThrows(IllegalArgumentException.class, () -> new DirtyChunkProcessor(null, chunk -> true, chunk -> true));
+	}
+
+	private static DirtyChunkStore stableStore(int count) {
+		DirtyChunkStore store = new DirtyChunkStore(false);
+		for (int index = 0; index < count; index++) {
+			store.markDirty("minecraft:overworld", new BlockPos(index << 4, 64, 0));
+		}
+		for (int tick = 0; tick < 200; tick++) {
+			store.advance();
+		}
+		return store;
+	}
+}

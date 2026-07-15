@@ -9,8 +9,11 @@ import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.Iterator;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.core.BlockPos;
@@ -21,11 +24,20 @@ import net.minecraft.world.level.storage.LevelResource;
 public final class DirtyChunkStore {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 	private final Map<String, DirtyChunkRecord> records = new LinkedHashMap<>();
+	private final Map<String, Long> generations = new HashMap<>();
+	private final Map<String, ClaimTicket> inFlight = new HashMap<>();
 	private long currentTick;
+	private long nextClaimId = 1L;
 	private boolean paused;
 
 	public DirtyChunkStore() {
-		ServerTickEvents.END_SERVER_TICK.register(server -> advance());
+		this(true);
+	}
+
+	DirtyChunkStore(boolean registerTickListener) {
+		if (registerTickListener) {
+			ServerTickEvents.END_SERVER_TICK.register(server -> advance());
+		}
 	}
 
 	public synchronized void markDirty(String dimension, BlockPos pos) {
@@ -34,11 +46,15 @@ public final class DirtyChunkStore {
 		String key = key(dimension, chunkX, chunkZ);
 		DirtyChunkRecord record = records.computeIfAbsent(key, ignored -> new DirtyChunkRecord(dimension, chunkX, chunkZ, currentTick));
 		record.markColumn(pos.getX() & 15, pos.getZ() & 15, currentTick);
+		generations.put(key, generations.getOrDefault(key, 0L) + 1L);
+		inFlight.remove(key);
 	}
 
 	public synchronized void load(MinecraftServer server) {
 		Path path = path(server);
 		records.clear();
+		generations.clear();
+		inFlight.clear();
 		if (!Files.exists(path)) {
 			return;
 		}
@@ -54,7 +70,9 @@ public final class DirtyChunkStore {
 				DirtyChunkRecord record = new DirtyChunkRecord(recordFile.dimension, recordFile.chunkX, recordFile.chunkZ, currentTick);
 				DirtyActivityState state = recordFile.state == null ? DirtyActivityState.ACTIVE : recordFile.state;
 				record.restore(state, recordFile.firstDirtyTick, recordFile.lastDirtyTick, recordFile.dirtyColumns);
-				records.put(key(recordFile.dimension, recordFile.chunkX, recordFile.chunkZ), record);
+				String key = key(recordFile.dimension, recordFile.chunkX, recordFile.chunkZ);
+				records.put(key, record);
+				generations.put(key, 0L);
 			}
 			XaeroMapsync_r.LOGGER.info("Loaded {} dirty chunks", records.size());
 		} catch (IOException | RuntimeException exception) {
@@ -90,20 +108,65 @@ public final class DirtyChunkStore {
 		}
 	}
 
-	public synchronized int flushStableDirtyChunks() {
-		if (paused) {
-			return 0;
+	public synchronized List<StableDirtyChunk> claimStableDirtyChunks(int budget) {
+		if (budget < 0) {
+			throw new IllegalArgumentException("Dirty chunk budget must not be negative");
 		}
-		int flushed = 0;
-		Iterator<Map.Entry<String, DirtyChunkRecord>> iterator = records.entrySet().iterator();
-		while (iterator.hasNext()) {
-			DirtyChunkRecord record = iterator.next().getValue();
-			if (record.state() == DirtyActivityState.STABLE) {
-				iterator.remove();
-				flushed++;
+		if (paused || budget == 0) {
+			return Collections.emptyList();
+		}
+
+		List<StableDirtyChunk> claimed = new ArrayList<>(Math.min(budget, records.size()));
+		for (Map.Entry<String, DirtyChunkRecord> entry : records.entrySet()) {
+			if (claimed.size() >= budget) {
+				break;
 			}
+			String key = entry.getKey();
+			DirtyChunkRecord record = entry.getValue();
+			if (record.state() != DirtyActivityState.STABLE || inFlight.containsKey(key)) {
+				continue;
+			}
+			long generation = generations.getOrDefault(key, 0L);
+			long claimId = nextClaimId++;
+			inFlight.put(key, new ClaimTicket(claimId, generation));
+			claimed.add(new StableDirtyChunk(key, claimId, generation, record));
 		}
-		return flushed;
+		return Collections.unmodifiableList(claimed);
+	}
+
+	public synchronized boolean confirmProcessed(StableDirtyChunk claimedChunk) {
+		if (!hasCurrentClaim(claimedChunk)) {
+			return false;
+		}
+		DirtyChunkRecord record = records.get(claimedChunk.key);
+		if (record == null || record.state() != DirtyActivityState.STABLE) {
+			inFlight.remove(claimedChunk.key);
+			return false;
+		}
+		records.remove(claimedChunk.key);
+		generations.remove(claimedChunk.key);
+		inFlight.remove(claimedChunk.key);
+		return true;
+	}
+
+	public synchronized boolean defer(StableDirtyChunk claimedChunk) {
+		if (!hasCurrentClaim(claimedChunk)) {
+			return false;
+		}
+		inFlight.remove(claimedChunk.key);
+		DirtyChunkRecord record = records.remove(claimedChunk.key);
+		if (record != null) {
+			records.put(claimedChunk.key, record);
+		}
+		return true;
+	}
+
+	/**
+	 * @deprecated Stable records require explicit processing confirmation and cannot be flushed safely.
+	 */
+	@Deprecated
+	public synchronized int flushStableDirtyChunks() {
+		return 0;
 	}
 
 	public synchronized int totalCount() {
@@ -111,6 +174,18 @@ public final class DirtyChunkStore {
 	}
 
 	public synchronized String stateSummary() {
+		Statistics statistics = statistics();
+		return "paused=" + statistics.paused()
+				+ ",quiet=" + statistics.quiet()
+				+ ",active=" + statistics.active()
+				+ ",storm=" + statistics.storm()
+				+ ",cooldown=" + statistics.cooldown()
+				+ ",stable=" + statistics.stable()
+				+ ",queuedStable=" + statistics.queuedStable()
+				+ ",inFlight=" + statistics.inFlight();
+	}
+
+	public synchronized Statistics statistics() {
 		int quiet = 0;
 		int active = 0;
 		int storm = 0;
@@ -137,18 +212,31 @@ public final class DirtyChunkStore {
 					break;
 			}
 		}
-		return "paused=" + paused + ",quiet=" + quiet + ",active=" + active + ",storm=" + storm + ",cooldown=" + cooldown + ",stable=" + stable;
+		return new Statistics(records.size(), quiet, active, storm, cooldown, stable, stable - inFlight.size(), inFlight.size(), paused);
 	}
 
 	public synchronized void setPaused(boolean paused) {
 		this.paused = paused;
 	}
 
-	private synchronized void advance() {
-		currentTick++;
-		for (DirtyChunkRecord record : records.values()) {
-			record.advance(currentTick);
+	void advance() {
+		synchronized (this) {
+			currentTick++;
+			for (DirtyChunkRecord record : records.values()) {
+				record.advance(currentTick);
+			}
 		}
+	}
+
+	private boolean hasCurrentClaim(StableDirtyChunk claimedChunk) {
+		if (claimedChunk == null) {
+			return false;
+		}
+		ClaimTicket ticket = inFlight.get(claimedChunk.key);
+		return ticket != null
+				&& ticket.claimId == claimedChunk.claimId
+				&& ticket.generation == claimedChunk.generation
+				&& generations.getOrDefault(claimedChunk.key, -1L) == claimedChunk.generation;
 	}
 
 	private static String key(String dimension, int chunkX, int chunkZ) {
@@ -157,6 +245,64 @@ public final class DirtyChunkStore {
 
 	private static Path path(MinecraftServer server) {
 		return server.getWorldPath(LevelResource.ROOT).resolve("xaero-mapsync_r").resolve("dirty_chunks.json");
+	}
+
+	public static final class StableDirtyChunk {
+		private final String key;
+		private final long claimId;
+		private final long generation;
+		private final String dimension;
+		private final int chunkX;
+		private final int chunkZ;
+		private final long[] dirtyColumns;
+
+		private StableDirtyChunk(String key, long claimId, long generation, DirtyChunkRecord record) {
+			this.key = key;
+			this.claimId = claimId;
+			this.generation = generation;
+			this.dimension = record.dimension();
+			this.chunkX = record.chunkX();
+			this.chunkZ = record.chunkZ();
+			this.dirtyColumns = record.dirtyColumnsAsLongArray();
+		}
+
+		public String dimension() {
+			return dimension;
+		}
+
+		public int chunkX() {
+			return chunkX;
+		}
+
+		public int chunkZ() {
+			return chunkZ;
+		}
+
+		public long[] dirtyColumns() {
+			return dirtyColumns.clone();
+		}
+	}
+
+	public record Statistics(
+			int total,
+			int quiet,
+			int active,
+			int storm,
+			int cooldown,
+			int stable,
+			int queuedStable,
+			int inFlight,
+			boolean paused) {
+	}
+
+	private static final class ClaimTicket {
+		private final long claimId;
+		private final long generation;
+
+		private ClaimTicket(long claimId, long generation) {
+			this.claimId = claimId;
+			this.generation = generation;
+		}
 	}
 
 	private static final class DirtyChunkFile {

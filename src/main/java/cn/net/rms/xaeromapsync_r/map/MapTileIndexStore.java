@@ -13,6 +13,10 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.storage.LevelResource;
@@ -79,11 +83,7 @@ public final class MapTileIndexStore {
 	}
 
 	public synchronized long rootHash() {
-		long hash = 0L;
-		for (MapTileIndexEntry tile : tiles.values()) {
-			hash = MapTileHasher.combine(hash, tile.contentHash(), tile.revision());
-		}
-		return hash;
+		return MerkleTreeBuilder.rootHash(MerkleTreeBuilder.build(tiles.values()));
 	}
 
 	public synchronized int totalCount() {
@@ -96,6 +96,43 @@ public final class MapTileIndexStore {
 
 	public synchronized Collection<MerkleNode> merkleSnapshot() {
 		return MerkleTreeBuilder.build(tiles.values());
+	}
+
+	public synchronized List<MerkleNode> merkleRoots() {
+		return MerkleTreeBuilder.roots(MerkleTreeBuilder.build(tiles.values()));
+	}
+
+	public synchronized long rootHash(String dimension) {
+		return MerkleTreeBuilder.rootHash(merkleSnapshot(dimension));
+	}
+
+	public synchronized List<MerkleNode> merkleRoots(String dimension) {
+		return MerkleTreeBuilder.roots(merkleSnapshot(dimension));
+	}
+
+	private List<MerkleNode> merkleSnapshot(String dimension) {
+		List<MapTileIndexEntry> entries = new ArrayList<>();
+		for (MapTileIndexEntry entry : tiles.values()) if (entry.dimension().equals(dimension)) entries.add(entry);
+		return MerkleTreeBuilder.build(entries);
+	}
+
+	public synchronized List<MerkleNode> merkleChildren(String dimension, int level, int nodeX, int nodeZ) {
+		if (level <= 0) {
+			return Collections.emptyList();
+		}
+		List<MerkleNode> children = new ArrayList<>();
+		for (MerkleNode node : MerkleTreeBuilder.build(tiles.values())) {
+			if (node.dimension().equals(dimension) && node.level() == level - 1
+					&& Math.floorDiv(node.nodeX(), 2) == nodeX && Math.floorDiv(node.nodeZ(), 2) == nodeZ) {
+				children.add(node);
+			}
+		}
+		children.sort(Comparator.comparingInt(MerkleNode::nodeX).thenComparingInt(MerkleNode::nodeZ));
+		return children;
+	}
+
+	public synchronized Optional<MapTileIndexEntry> find(String dimension, int chunkX, int chunkZ) {
+		return Optional.ofNullable(tiles.get(key(dimension, chunkX, chunkZ)));
 	}
 
 	private static String key(String dimension, int chunkX, int chunkZ) {

@@ -110,6 +110,14 @@ public final class PublicWaypointStore {
 		return count;
 	}
 
+	public synchronized int activeCount(UUID creatorId) {
+		int count = 0;
+		for (PublicWaypoint waypoint : waypoints.values()) {
+			if (!waypoint.deleted() && creatorId.equals(waypoint.creatorId())) count++;
+		}
+		return count;
+	}
+
 	public synchronized int deletedCount() {
 		return waypoints.size() - activeCount();
 	}

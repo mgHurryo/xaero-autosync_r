@@ -40,4 +40,8 @@ public final class MerkleNode {
 	public int childCount() {
 		return childCount;
 	}
+
+	public String key() {
+		return dimension + ":" + level + ":" + nodeX + ":" + nodeZ;
+	}
 }

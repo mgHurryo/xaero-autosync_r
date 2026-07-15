@@ -5,6 +5,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.List;
 
 public final class ClientWaypointCache {
 	private final Map<UUID, PublicWaypoint> waypoints = new LinkedHashMap<>();
@@ -32,5 +33,9 @@ public final class ClientWaypointCache {
 			}
 		}
 		return count;
+	}
+
+	public synchronized List<PublicWaypoint> snapshot() {
+		return List.copyOf(waypoints.values());
 	}
 }

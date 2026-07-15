@@ -11,6 +11,9 @@ public final class TransferAckPayload {
 		if (transferId == null) {
 			throw new IllegalArgumentException("Transfer id is required");
 		}
+		if (highestContiguousPart < -1 || highestContiguousPart >= TransferPartPayload.MAX_PART_COUNT) {
+			throw new IllegalArgumentException("Invalid contiguous part index: " + highestContiguousPart);
+		}
 		this.transferId = transferId;
 		this.highestContiguousPart = highestContiguousPart;
 	}
@@ -23,5 +26,13 @@ public final class TransferAckPayload {
 		buffer.writeLong(transferId.getMostSignificantBits());
 		buffer.writeLong(transferId.getLeastSignificantBits());
 		buffer.writeVarInt(highestContiguousPart);
+	}
+
+	public UUID transferId() {
+		return transferId;
+	}
+
+	public int highestContiguousPart() {
+		return highestContiguousPart;
 	}
 }

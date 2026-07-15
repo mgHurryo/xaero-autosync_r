@@ -6,7 +6,7 @@ import net.minecraft.network.FriendlyByteBuf;
 public final class TileDataPayload {
 	private static final int MAX_DIMENSION_LENGTH = 256;
 	private static final int TILE_HEIGHT_COUNT = 256;
-	private static final int MAX_PAYLOAD_BYTES = 8192;
+	private static final int MAX_PAYLOAD_BYTES = 16384;
 	private final MapTile tile;
 	private final long revision;
 	private final String compression;
@@ -26,7 +26,8 @@ public final class TileDataPayload {
 	}
 
 	public static TileDataPayload fromTile(MapTile tile, long revision, String compression) {
-		return new TileDataPayload(tile, revision, compression, CompressionCodec.encodeHeights(tile.heights(), compression));
+		return new TileDataPayload(tile, revision, compression, CompressionCodec.encodeSurface(
+				new CompressionCodec.MapTileSurfaceData(tile.heights(), tile.blockStateIds(), tile.biomeIds(), tile.lightLevels()), compression));
 	}
 
 	public static TileDataPayload read(FriendlyByteBuf buffer) {
@@ -42,8 +43,9 @@ public final class TileDataPayload {
 		}
 		byte[] payload = new byte[payloadLength];
 		buffer.readBytes(payload);
-		int[] heights = CompressionCodec.decodeHeights(payload, TILE_HEIGHT_COUNT, compression);
-		MapTile tile = new MapTile(dimension, chunkX, chunkZ, heights, contentHash);
+		CompressionCodec.MapTileSurfaceData surface = CompressionCodec.decodeSurface(payload, TILE_HEIGHT_COUNT, compression);
+		MapTile tile = new MapTile(dimension, chunkX, chunkZ, surface.heights(), surface.blockStateIds(), surface.biomeIds(),
+				surface.lightLevels(), contentHash);
 		return new TileDataPayload(tile, revision, compression, payload);
 	}
 

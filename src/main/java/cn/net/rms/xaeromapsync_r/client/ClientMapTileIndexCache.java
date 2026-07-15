@@ -20,6 +20,14 @@ public final class ClientMapTileIndexCache {
 		}
 	}
 
+	public synchronized void setRootHash(long rootHash) {
+		this.rootHash = rootHash;
+	}
+
+	public synchronized void upsert(MapTileIndexEntry entry) {
+		entries.put(key(entry.dimension(), entry.chunkX(), entry.chunkZ()), entry);
+	}
+
 	public synchronized long rootHash() {
 		return rootHash;
 	}

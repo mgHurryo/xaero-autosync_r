@@ -18,6 +18,6 @@ public abstract class LevelDirtyMixin {
 			return;
 		}
 		ServerLevel level = (ServerLevel) (Object) this;
-		SharedMapServer.dirtyChunks().markDirty(level.dimension().location().toString(), pos);
+		SharedMapServer.recordBlockChange(level.dimension().location().toString(), pos);
 	}
 }

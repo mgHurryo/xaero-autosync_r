@@ -42,6 +42,30 @@ public final class SharedMapConfig {
 		return VALUES.getProperty("network.compression", SharedMapProtocolDefaults.COMPRESSION);
 	}
 
+	public static boolean highLoadPause() {
+		return booleanValue("tasks.high_load_pause", true);
+	}
+
+	public static int highLoadMsptThreshold() {
+		return intValue("tasks.high_load_mspt_threshold", 45);
+	}
+
+	public static int dirtyChunksPerTick() {
+		return intValue("tasks.dirty_chunks_per_tick", 1);
+	}
+
+	public static int dirtyDrainBudgetPerTick() {
+		return intValue("tasks.dirty_drain_budget_per_tick", 4);
+	}
+
+	public static int stormBlockChangesThreshold() { return intValue("activity.storm_block_changes_per_tick", 4096); }
+	public static int stormDirtyChunksThreshold() { return intValue("activity.storm_dirty_chunks_per_tick", 16); }
+	public static int stormCooldownTicks() { return intValue("activity.storm_cooldown_ticks", 100); }
+	public static int stableTicks() { return intValue("activity.stable_ticks", 200); }
+	public static boolean allowPlayerWaypointUpload() { return booleanValue("waypoints.allow_player_upload", true); }
+	public static int maxWaypointsPerPlayer() { return intValue("waypoints.max_per_player", 256); }
+	public static int maxPublicWaypoints() { return intValue("waypoints.max_total", 4096); }
+
 	private static void load(Path path) {
 		defaults().forEach((key, value) -> VALUES.setProperty((String) key, (String) value));
 		if (!Files.exists(path)) {
@@ -74,6 +98,11 @@ public final class SharedMapConfig {
 		}
 	}
 
+	private static boolean booleanValue(String key, boolean fallback) {
+		String value = VALUES.getProperty(key);
+		return value == null ? fallback : Boolean.parseBoolean(value);
+	}
+
 	private static Properties defaults() {
 		Properties defaults = new Properties();
 		defaults.setProperty("protocol.version", Integer.toString(SharedMapProtocolDefaults.PROTOCOL_VERSION));
@@ -86,8 +115,16 @@ public final class SharedMapConfig {
 		defaults.setProperty("exploration.edge_chunk_margin", "1");
 		defaults.setProperty("tasks.normal_tick_budget_ms", "2");
 		defaults.setProperty("tasks.high_load_pause", "true");
+		defaults.setProperty("tasks.high_load_mspt_threshold", "45");
+		defaults.setProperty("tasks.dirty_chunks_per_tick", "1");
+		defaults.setProperty("tasks.dirty_drain_budget_per_tick", "4");
+		defaults.setProperty("activity.storm_block_changes_per_tick", "4096");
+		defaults.setProperty("activity.storm_dirty_chunks_per_tick", "16");
+		defaults.setProperty("activity.storm_cooldown_ticks", "100");
+		defaults.setProperty("activity.stable_ticks", "200");
 		defaults.setProperty("waypoints.allow_player_upload", "true");
 		defaults.setProperty("waypoints.max_per_player", "256");
+		defaults.setProperty("waypoints.max_total", "4096");
 		return defaults;
 	}
 }

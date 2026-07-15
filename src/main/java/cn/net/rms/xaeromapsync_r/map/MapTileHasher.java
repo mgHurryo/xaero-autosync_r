@@ -16,6 +16,19 @@ public final class MapTileHasher {
 		return hash;
 	}
 
+	public static long hashSurface(int[] heights, int[] blockStateIds, int[] biomeIds, int[] lightLevels) {
+		return combine(hashHeights(heights), hashHeights(blockStateIds), hashHeights(biomeIds), hashHeights(lightLevels));
+	}
+
+	public static long hashString(String value) {
+		long hash = FNV_OFFSET;
+		for (int index = 0; index < value.length(); index++) {
+			hash ^= value.charAt(index);
+			hash *= FNV_PRIME;
+		}
+		return hash;
+	}
+
 	public static long combine(long... childHashes) {
 		long hash = FNV_OFFSET;
 		for (long childHash : childHashes) {

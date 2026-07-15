@@ -8,20 +8,24 @@ import java.util.List;
 import java.util.Map;
 
 public final class MerkleTreeBuilder {
-	private static final int GROUP_SIZE = 4;
-	private static final int MAX_LEVELS = 6;
+	private static final int GROUP_SIZE = 2;
+	private static final int MAX_LEVELS = 30;
 
 	private MerkleTreeBuilder() {
 	}
 
 	public static List<MerkleNode> build(Collection<MapTileIndexEntry> entries) {
+		List<MapTileIndexEntry> sortedEntries = new ArrayList<>(entries);
+		sortedEntries.sort(Comparator.comparing(MapTileIndexEntry::dimension)
+				.thenComparingInt(MapTileIndexEntry::chunkX)
+				.thenComparingInt(MapTileIndexEntry::chunkZ));
 		Map<NodeKey, MerkleNode> current = new LinkedHashMap<>();
-		for (MapTileIndexEntry entry : entries) {
+		for (MapTileIndexEntry entry : sortedEntries) {
 			NodeKey key = new NodeKey(entry.dimension(), 0, entry.chunkX(), entry.chunkZ());
-			current.put(key, new MerkleNode(entry.dimension(), 0, entry.chunkX(), entry.chunkZ(), MapTileHasher.combine(entry.contentHash(), entry.revision()), 1));
+			current.put(key, new MerkleNode(entry.dimension(), 0, entry.chunkX(), entry.chunkZ(), entry.contentHash(), 1));
 		}
 		List<MerkleNode> all = new ArrayList<>(current.values());
-		for (int level = 1; level <= MAX_LEVELS && current.size() > 1; level++) {
+		for (int level = 1; level <= MAX_LEVELS && hasReducibleDimension(current); level++) {
 			Map<NodeKey, List<MerkleNode>> grouped = new LinkedHashMap<>();
 			for (MerkleNode node : current.values()) {
 				int parentX = Math.floorDiv(node.nodeX(), GROUP_SIZE);
@@ -35,10 +39,13 @@ public final class MerkleTreeBuilder {
 						.thenComparingInt(MerkleNode::level)
 						.thenComparingInt(MerkleNode::nodeX)
 						.thenComparingInt(MerkleNode::nodeZ));
-				long hash = 0L;
+				long hash = MapTileHasher.combine(MapTileHasher.hashString(group.getKey().dimension), level,
+						group.getKey().nodeX, group.getKey().nodeZ);
 				int childCount = 0;
 				for (MerkleNode child : group.getValue()) {
-					hash = MapTileHasher.combine(hash, child.hash());
+					int slotX = Math.floorMod(child.nodeX(), GROUP_SIZE);
+					int slotZ = Math.floorMod(child.nodeZ(), GROUP_SIZE);
+					hash = MapTileHasher.combine(hash, slotZ * GROUP_SIZE + slotX, child.hash());
 					childCount += child.childCount();
 				}
 				NodeKey key = group.getKey();
@@ -48,6 +55,44 @@ public final class MerkleTreeBuilder {
 			all.addAll(current.values());
 		}
 		return all;
+	}
+
+	private static boolean hasReducibleDimension(Map<NodeKey, MerkleNode> nodes) {
+		Map<String, Integer> counts = new LinkedHashMap<>();
+		for (MerkleNode node : nodes.values()) {
+			int count = counts.merge(node.dimension(), 1, Integer::sum);
+			if (count > 1) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public static long rootHash(Collection<MerkleNode> nodes) {
+		List<MerkleNode> roots = roots(nodes);
+		long hash = 0L;
+		for (MerkleNode root : roots) {
+			hash = MapTileHasher.combine(hash, MapTileHasher.hashString(root.dimension()), root.level(),
+					root.nodeX(), root.nodeZ(), root.hash());
+		}
+		return hash;
+	}
+
+	public static List<MerkleNode> roots(Collection<MerkleNode> nodes) {
+		Map<String, Integer> highestLevel = new LinkedHashMap<>();
+		for (MerkleNode node : nodes) {
+			highestLevel.merge(node.dimension(), node.level(), Math::max);
+		}
+		List<MerkleNode> roots = new ArrayList<>();
+		for (MerkleNode node : nodes) {
+			if (node.level() == highestLevel.getOrDefault(node.dimension(), -1)) {
+				roots.add(node);
+			}
+		}
+		roots.sort(Comparator.comparing(MerkleNode::dimension)
+				.thenComparingInt(MerkleNode::nodeX)
+				.thenComparingInt(MerkleNode::nodeZ));
+		return roots;
 	}
 
 	private static final class NodeKey {

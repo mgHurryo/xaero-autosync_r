@@ -6,7 +6,12 @@ import java.util.Optional;
 import java.util.UUID;
 
 final class XaeroWaypointIdentity {
-	private static final String LOCK_PREFIX = "\uD83D\uDD12 ";
+	private static final String LOCK_PREFIX = "\u26BF ";
+	private static final String LEGACY_LOCK_PREFIX = "\uD83D\uDD12 ";
+	private static final char FORMAT_CODE = '\u00A7';
+	private static final String FORMAT_RESET = "\u00A7r";
+	private static final int FORMATTED_DIGIT_COUNT = 32;
+	private static final int FORMATTED_MARKER_LENGTH = (FORMATTED_DIGIT_COUNT + 2) * 2;
 	private static final String LEGACY_PREFIX = " [xms-";
 	private static final String LEGACY_SUFFIX = "]";
 	private static final int ENCODED_UUID_LENGTH = 22;
@@ -21,23 +26,49 @@ final class XaeroWaypointIdentity {
 	}
 
 	static String managedName(String displayName, UUID id) {
-		return LOCK_PREFIX + identifiedName(displayName, id);
-	}
-
-	static String identifiedName(String displayName, UUID id) {
 		displayName = stripLock(displayName);
-		StringBuilder result = new StringBuilder(displayName.length() + HIDDEN_MARKER_LENGTH);
-		result.append(displayName).append(HIDDEN_PREFIX);
+		StringBuilder result = new StringBuilder(displayName.length() + LOCK_PREFIX.length() + FORMATTED_MARKER_LENGTH);
+		result.append(LOCK_PREFIX).append(displayName).append(FORMAT_RESET);
 		for (byte value : bytes(id)) {
-			result.append((char) (HIDDEN_DIGIT_BASE + ((value >>> 4) & 0xF)));
-			result.append((char) (HIDDEN_DIGIT_BASE + (value & 0xF)));
+			result.append(FORMAT_CODE).append(Character.forDigit((value >>> 4) & 0xF, 16));
+			result.append(FORMAT_CODE).append(Character.forDigit(value & 0xF, 16));
 		}
-		return result.append(HIDDEN_SUFFIX).toString();
+		return result.append(FORMAT_RESET).toString();
 	}
 
 	static Optional<UUID> parse(String name) {
+		Optional<UUID> formatted = parseFormatted(name);
+		if (formatted.isPresent()) {
+			return formatted;
+		}
 		Optional<UUID> hidden = parseHidden(name);
 		return hidden.isPresent() ? hidden : parseLegacy(name);
+	}
+
+	private static Optional<UUID> parseFormatted(String name) {
+		if (name == null || name.length() < FORMATTED_MARKER_LENGTH) {
+			return Optional.empty();
+		}
+		int markerStart = name.length() - FORMATTED_MARKER_LENGTH;
+		if (!name.startsWith(FORMAT_RESET, markerStart) || !name.endsWith(FORMAT_RESET)) {
+			return Optional.empty();
+		}
+		byte[] bytes = new byte[16];
+		int offset = markerStart + FORMAT_RESET.length();
+		for (int index = 0; index < FORMATTED_DIGIT_COUNT; index += 2) {
+			int high = formattedDigit(name, offset + index * 2);
+			int low = formattedDigit(name, offset + (index + 1) * 2);
+			if (high < 0 || low < 0) {
+				return Optional.empty();
+			}
+			bytes[index / 2] = (byte) ((high << 4) | low);
+		}
+		ByteBuffer buffer = ByteBuffer.wrap(bytes);
+		return Optional.of(new UUID(buffer.getLong(), buffer.getLong()));
+	}
+
+	private static int formattedDigit(String name, int offset) {
+		return name.charAt(offset) == FORMAT_CODE ? Character.digit(name.charAt(offset + 1), 16) : -1;
 	}
 
 	private static Optional<UUID> parseHidden(String name) {
@@ -83,7 +114,7 @@ final class XaeroWaypointIdentity {
 	}
 
 	static boolean isManagedName(String name) {
-		if (parseHidden(name).isPresent()) {
+		if (parseFormatted(name).isPresent() || parseHidden(name).isPresent()) {
 			return true;
 		}
 		if (name == null || !name.endsWith(LEGACY_SUFFIX)) {
@@ -96,7 +127,9 @@ final class XaeroWaypointIdentity {
 
 	static String displayName(String name) {
 		String visibleName;
-		if (parseHidden(name).isPresent()) {
+		if (parseFormatted(name).isPresent()) {
+			visibleName = name.substring(0, name.length() - FORMATTED_MARKER_LENGTH);
+		} else if (parseHidden(name).isPresent()) {
 			visibleName = name.substring(0, name.length() - HIDDEN_MARKER_LENGTH);
 		} else {
 			visibleName = parseLegacy(name).isPresent()
@@ -107,7 +140,13 @@ final class XaeroWaypointIdentity {
 	}
 
 	private static String stripLock(String name) {
-		return name != null && name.startsWith(LOCK_PREFIX) ? name.substring(LOCK_PREFIX.length()) : name;
+		if (name == null) {
+			return null;
+		}
+		if (name.startsWith(LOCK_PREFIX)) {
+			return name.substring(LOCK_PREFIX.length());
+		}
+		return name.startsWith(LEGACY_LOCK_PREFIX) ? name.substring(LEGACY_LOCK_PREFIX.length()) : name;
 	}
 
 	private static String encode(UUID id) {

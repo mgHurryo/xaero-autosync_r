@@ -99,8 +99,8 @@ public final class SharedMapClient {
 	public static void disconnect() {
 		connectedToSharedMapServer = false;
 		resetMapQueues();
+		clearPendingWaypointMutations();
 		WAYPOINTS.replace(java.util.List.of());
-		reconcileWaypoints();
 		waypointSanitizationPending = true;
 		TILE_DATA.saveIfDirty();
 	}
@@ -286,8 +286,6 @@ public final class SharedMapClient {
 			if (waypointsEnabled && connectedToSharedMapServer) {
 				SharedMapNetworking.requestWaypointSnapshot();
 				reconcileWaypoints();
-			} else if (!waypointsEnabled && waypointAdapter != null && waypointAdapter.isAvailable()) {
-				waypointAdapter.reconcile(java.util.List.of());
 			}
 		}
 	}

@@ -8,14 +8,15 @@ import org.junit.jupiter.api.Test;
 
 final class XaeroWaypointIdentityTest {
 	@Test
-	void hiddenMarkerRoundTripsWithoutChangingTheVisibleName() {
+	void formattingMarkerRoundTripsWithoutChangingTheVisibleName() {
 		UUID id = UUID.fromString("12345678-1234-5678-9abc-def012345678");
 		String managedName = XaeroWaypointIdentity.managedName("Village: north", id);
 
 		assertEquals(id, XaeroWaypointIdentity.parse(managedName).orElseThrow());
 		assertEquals("Village: north", XaeroWaypointIdentity.displayName(managedName));
-		assertTrue(managedName.startsWith("\uD83D\uDD12 "));
+		assertTrue(managedName.startsWith("\u26BF "));
 		assertTrue(!managedName.contains("[xms-"));
+		assertTrue(!managedName.contains("\uFE00"));
 	}
 
 	@Test

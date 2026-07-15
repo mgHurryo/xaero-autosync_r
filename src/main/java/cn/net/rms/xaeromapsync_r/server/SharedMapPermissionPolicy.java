@@ -58,14 +58,9 @@ public final class SharedMapPermissionPolicy {
 	public void validateDelete(SharedMapActor actor, PublicWaypoint current) {
 		Objects.requireNonNull(actor, "actor");
 		Objects.requireNonNull(current, "current");
-		if (!canMutate(actor, current)) {
-			throw new IllegalArgumentException("Waypoint permission denied");
+		if (current.deleted()) {
+			throw new IllegalArgumentException("Waypoint is already deleted");
 		}
-		validateRegionChange(actor, regionOf(current));
-	}
-
-	public boolean canMutate(SharedMapActor actor, PublicWaypoint waypoint) {
-		return actor.operator() || (actor.playerId() != null && actor.playerId().equals(waypoint.creatorId()));
 	}
 
 	public boolean canView(SharedMapActor actor, PublicWaypoint waypoint) {

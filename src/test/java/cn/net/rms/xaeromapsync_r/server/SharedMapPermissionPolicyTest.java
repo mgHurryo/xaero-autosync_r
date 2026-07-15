@@ -56,7 +56,7 @@ final class SharedMapPermissionPolicyTest {
 	}
 
 	@Test
-	void sharedWaypointsRejectUpdatesButCreatorAndOperatorCanDelete() {
+	void sharedWaypointsRejectUpdatesButEveryPlayerCanDelete() {
 		PublicWaypoint current = storedWaypoint(WaypointVisibility.PUBLIC, null, 1, 1);
 		PublicWaypoint submitted = submittedFor(current, WaypointVisibility.PUBLIC, 2, 2);
 
@@ -64,6 +64,8 @@ final class SharedMapPermissionPolicyTest {
 				() -> policy.prepareUpdate(outsider, current, submitted));
 		assertThrows(IllegalArgumentException.class, () -> policy.prepareUpdate(creator, current, submitted));
 		assertThrows(IllegalArgumentException.class, () -> policy.prepareUpdate(operator, current, submitted));
+		policy.validateDelete(outsider, current);
+		policy.validateDelete(teammate, current);
 		policy.validateDelete(creator, current);
 		policy.validateDelete(operator, current);
 	}
@@ -81,12 +83,13 @@ final class SharedMapPermissionPolicyTest {
 	}
 
 	@Test
-	void disabledRegionBlocksCreatorAndOperator() {
+	void disabledRegionDoesNotBlockSharedWaypointDeletion() {
 		PublicWaypoint current = storedWaypoint(WaypointVisibility.PUBLIC, null, 1, 1);
 		regionAccess.setWaypointChangesDisabled(policy.regionOf(current), true);
 
-		assertThrows(IllegalArgumentException.class, () -> policy.validateDelete(creator, current));
-		assertThrows(IllegalArgumentException.class, () -> policy.validateDelete(operator, current));
+		policy.validateDelete(outsider, current);
+		policy.validateDelete(creator, current);
+		policy.validateDelete(operator, current);
 	}
 
 	@Test

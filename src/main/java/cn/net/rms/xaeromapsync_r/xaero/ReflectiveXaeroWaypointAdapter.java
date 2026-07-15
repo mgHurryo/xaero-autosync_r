@@ -224,10 +224,6 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 		if (existing == null || existing.deleted()) {
 			throw new IllegalArgumentException("The selected Xaero waypoint is not shared");
 		}
-		if (!playerId.equals(existing.creatorId())) {
-			throw new IllegalArgumentException("Only the creator can unshare this waypoint");
-		}
-		bind(existing.id(), selected.nativeWaypoint());
 		return existing;
 	}
 
@@ -274,9 +270,8 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 				}
 				WaypointValues values = bridge.read(source);
 				if (XaeroWaypointIdentity.parse(values.name).filter(id::equals).isPresent()) {
-					String identifiedName = XaeroWaypointIdentity.identifiedName(
-							XaeroWaypointIdentity.displayName(values.name), id);
-					bridge.update(source, new WaypointValues(values.x, values.y, values.z, identifiedName,
+					bridge.update(source, new WaypointValues(values.x, values.y, values.z,
+							XaeroWaypointIdentity.displayName(values.name),
 							values.symbol, values.color));
 					changed = true;
 				}

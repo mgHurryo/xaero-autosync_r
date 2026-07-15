@@ -2,6 +2,7 @@ package cn.net.rms.xaeromapsync_r.xaero;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -94,7 +95,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 	}
 
 	@Test
-	void rejectedCreateClearsPendingLockAndReusesPersistedIdentityOnRetry() {
+	void rejectedCreateClearsPendingIdentityAndUsesANewIdentityOnRetry() {
 		FakePoint source = point("Factory", 12, 70, -8, "F", 11);
 		FakeBridge bridge = new FakeBridge(source);
 		bridge.select(source, "machines", OVERWORLD);
@@ -109,12 +110,12 @@ final class ReflectiveXaeroWaypointAdapterTest {
 		assertEquals(WaypointVisibility.PRIVATE,
 				adapter.selectedVisibility(new Object(), List.of(), PLAYER_ID).orElseThrow());
 		assertEquals("Factory", XaeroWaypointIdentity.displayName(source.values.name));
-		assertFalse(source.values.name.startsWith("\uD83D\uDD12 "));
-		assertEquals(first.waypoint().id(), XaeroWaypointIdentity.parse(source.values.name).orElseThrow());
+		assertFalse(source.values.name.startsWith("\u26BF "));
+		assertTrue(XaeroWaypointIdentity.parse(source.values.name).isEmpty());
 		XaeroWaypointMutation retry = adapter.prepareShare(new Object(), WaypointVisibility.TEAM, List.of(), PLAYER_ID,
 				"Builder");
 
-		assertEquals(first.waypoint().id(), retry.waypoint().id());
+		assertNotEquals(first.waypoint().id(), retry.waypoint().id());
 		assertEquals(WaypointVisibility.TEAM, retry.waypoint().visibility());
 	}
 
@@ -188,7 +189,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 	}
 
 	@Test
-	void nonCreatorCannotUpdateOrUnshareManagedWaypoint() {
+	void nonCreatorCannotUpdateButCanDeleteManagedWaypoint() {
 		UUID id = UUID.randomUUID();
 		FakePoint remote = managed(id, "Remote", 1, 2, 3, "R", 4);
 		FakeBridge bridge = new FakeBridge(remote);
@@ -198,8 +199,7 @@ final class ReflectiveXaeroWaypointAdapterTest {
 
 		assertThrows(IllegalArgumentException.class,
 				() -> adapter.prepareShare(new Object(), WaypointVisibility.PUBLIC, List.of(waypoint), PLAYER_ID, "Builder"));
-		assertThrows(IllegalArgumentException.class,
-				() -> adapter.prepareUnshare(new Object(), List.of(waypoint), PLAYER_ID));
+		assertSame(waypoint, adapter.prepareUnshare(new Object(), List.of(waypoint), PLAYER_ID));
 	}
 
 	@Test

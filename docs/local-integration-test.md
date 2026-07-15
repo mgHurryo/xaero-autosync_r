@@ -37,8 +37,8 @@ Connect both clients to `127.0.0.1:25565`. The clients use independent names, co
 2. Explore a new loaded area with client A and verify client B receives it without visiting.
 3. Build and remove a visible surface platform; wait for STABLE processing and verify both transitions on B.
 4. Create a normal waypoint with Xaero on A, select it in Xaero's native waypoint manager, click `Public`, and verify B receives it while A keeps the exact same native object without a duplicate.
-5. Select the shared waypoint on both clients and verify its name starts with a lock icon, the status says `Public`, and the Public, Team, and Xaero Edit buttons are gray. Verify `Delete shared` remains enabled and local edits on B are restored from the server without creating a duplicate.
-6. Click `Delete shared` on A and verify the tombstone removes the synchronized waypoint from both clients.
+5. Select the shared waypoint on both clients and verify its name starts with a lock icon, the status says `Public`, and Xaero's mutation buttons are gray without garbled marker text. Verify `Delete shared` remains enabled and local edits on B are restored from the server without creating a duplicate.
+6. Click `Delete shared` on B, verify the public-map warning appears, confirm it, and verify the tombstone removes the synchronized waypoint from both clients.
 7. Confirm the Team button is absent while A has no scoreboard team. Put both players on one scoreboard team, select another native Xaero waypoint on A, click `Team`, and verify the status says `Team`; then move B to another team and verify the waypoint is removed after the visibility refresh.
 8. Disconnect B, change map and waypoint state with A, reconnect B and verify only changed leaves transfer.
 9. Restart the server and verify explored chunks, tile revisions, dirty jobs, access rules, locked waypoint identity and tombstones survive.

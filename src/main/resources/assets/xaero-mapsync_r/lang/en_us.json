@@ -2,6 +2,8 @@
   "screen.xaero-mapsync_r.share.public": "Public",
   "screen.xaero-mapsync_r.share.team": "Team",
   "screen.xaero-mapsync_r.share.remove": "Delete shared",
+  "screen.xaero-mapsync_r.share.delete_confirm.title": "Delete shared waypoint?",
+  "screen.xaero-mapsync_r.share.delete_confirm.message": "This is a waypoint on the public map collection. Confirm deletion?",
   "screen.xaero-mapsync_r.share.status.not_shared": "Status: Not shared",
   "screen.xaero-mapsync_r.share.status.select": "Status: Select a waypoint",
   "screen.xaero-mapsync_r.share.status.public": "Status: Public",

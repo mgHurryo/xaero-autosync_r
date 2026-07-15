@@ -21,6 +21,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import cn.net.rms.xaeromapsync_r.network.ServerHelloPayload;
 import cn.net.rms.xaeromapsync_r.network.SharedMapNetworking;
 import cn.net.rms.xaeromapsync_r.network.TileDataPayload;
+import cn.net.rms.xaeromapsync_r.network.TileUnavailablePayload;
 import cn.net.rms.xaeromapsync_r.network.WaypointSnapshotPayload;
 import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
 import cn.net.rms.xaeromapsync_r.waypoint.WaypointVisibility;
@@ -149,6 +150,8 @@ public final class SharedMapClient {
 		}
 		if (!mapAdapter.apply(payload.tile())) {
 			resetMapQueues();
+			COMPLETED_MAP_ROOTS.remove(payload.tile().dimension());
+			saveCompletedRootHash();
 			if (mapAdapter.isAvailable()) retryMapSyncAtMillis = System.currentTimeMillis() + 2_000L;
 			return;
 		}
@@ -162,6 +165,18 @@ public final class SharedMapClient {
 				payload.tile().chunkX(),
 				payload.tile().chunkZ(),
 				payload.revision());
+	}
+
+	public static void handleTileUnavailable(TileUnavailablePayload payload) {
+		String key = tileKey(payload.dimension(), payload.chunkX(), payload.chunkZ());
+		if (!QUEUED_TILES.remove(key)) {
+			return;
+		}
+		tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
+		lastMapProgressMillis = System.currentTimeMillis();
+		XaeroMapsync_r.LOGGER.debug("Map tile unavailable {} {} {}: {}",
+				payload.dimension(), payload.chunkX(), payload.chunkZ(), payload.reason());
+		pumpTileRequests();
 	}
 
 	public static void handleMapNodeResponse(MapNodeResponsePayload payload) {

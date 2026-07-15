@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -17,6 +18,9 @@ import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.InflaterInputStream;
 import net.minecraft.server.MinecraftServer;
@@ -27,6 +31,7 @@ public final class MapTileDataStore {
 	private static final int MAGIC = 0x584d5332;
 	private static final int TILE_VALUES = 256;
 	private static final int MAX_MEMORY_TILES = 1024;
+	private static final Pattern TILE_FILE = Pattern.compile("(-?\\d+)_(-?\\d+)\\.tile");
 	private final Map<String, MapTile> memory = new LinkedHashMap<>(128, 0.75F, true) {
 		@Override protected boolean removeEldestEntry(Map.Entry<String, MapTile> eldest) { return size() > MAX_MEMORY_TILES; }
 	};
@@ -75,6 +80,56 @@ public final class MapTileDataStore {
 		}
 	}
 
+	public int recoverIndex(MapTileIndexStore index) {
+		Path activeRoot;
+		synchronized (this) {
+			activeRoot = root;
+		}
+		if (activeRoot == null || !Files.isDirectory(activeRoot)) {
+			return 0;
+		}
+		int recovered = 0;
+		try (Stream<Path> dimensions = Files.list(activeRoot)) {
+			for (Path dimensionPath : (Iterable<Path>) dimensions.filter(Files::isDirectory)::iterator) {
+				String dimension;
+				try {
+					dimension = new String(Base64.getUrlDecoder().decode(dimensionPath.getFileName().toString()),
+							StandardCharsets.UTF_8);
+				} catch (IllegalArgumentException exception) {
+					XaeroMapsync_r.LOGGER.warn("Ignoring map tile directory with invalid dimension id {}", dimensionPath);
+					continue;
+				}
+				try (Stream<Path> files = Files.list(dimensionPath)) {
+					for (Path tilePath : (Iterable<Path>) files.filter(Files::isRegularFile)::iterator) {
+						Matcher matcher = TILE_FILE.matcher(tilePath.getFileName().toString());
+						if (!matcher.matches()) {
+							continue;
+						}
+						try {
+							int chunkX = Integer.parseInt(matcher.group(1));
+							int chunkZ = Integer.parseInt(matcher.group(2));
+							Optional<MapTile> tile = find(dimension, chunkX, chunkZ);
+							if (tile.isPresent()) {
+								Optional<MapTileIndexEntry> previous = index.find(dimension, chunkX, chunkZ);
+								if (previous.isEmpty() || previous.get().contentHash() != tile.get().contentHash()) {
+									recovered++;
+								}
+								index.upsert(tile.get());
+							}
+						} catch (NumberFormatException exception) {
+							XaeroMapsync_r.LOGGER.warn("Ignoring map tile with invalid coordinates {}", tilePath);
+						}
+					}
+				} catch (IOException exception) {
+					XaeroMapsync_r.LOGGER.warn("Failed to scan map tile directory {}", dimensionPath, exception);
+				}
+			}
+		} catch (IOException exception) {
+			XaeroMapsync_r.LOGGER.warn("Failed to recover map tile index from {}", activeRoot, exception);
+		}
+		return recovered;
+	}
+
 	public synchronized void stop() {
 		ExecutorService activeWriter = writer;
 		writer = null;
@@ -92,7 +147,7 @@ public final class MapTileDataStore {
 
 	private synchronized Path path(String dimension, int chunkX, int chunkZ) {
 		if (root == null) return null;
-		String encodedDimension = Base64.getUrlEncoder().withoutPadding().encodeToString(dimension.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+		String encodedDimension = Base64.getUrlEncoder().withoutPadding().encodeToString(dimension.getBytes(StandardCharsets.UTF_8));
 		return root.resolve(encodedDimension).resolve(chunkX + "_" + chunkZ + ".tile");
 	}
 

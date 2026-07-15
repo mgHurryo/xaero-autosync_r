@@ -80,7 +80,9 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 
 	private static boolean isNotReady(Throwable exception) {
 		return exception instanceof IllegalStateException && exception.getMessage() != null
-				&& (exception.getMessage().contains("not initialized") || exception.getMessage().contains("not loaded yet"));
+				&& (exception.getMessage().contains("not initialized")
+						|| exception.getMessage().contains("not loaded yet")
+						|| exception.getMessage().contains("not fully loaded"));
 	}
 
 	static boolean supportsVersion(String version) {
@@ -138,8 +140,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Method setRegionLoadState;
 		private final Method isBeingWritten;
 		private final Method setBeingWritten;
-		private final Method getLastSaveTime;
-		private final Method setLastSaveTime;
+		private final Field lastSaveTimeField;
 		private final Method isRefreshing;
 		private final Method requestRefresh;
 		private final Method cancelRefresh;
@@ -194,17 +195,16 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			getCurrentDimension = method(mapProcessorClass, String.class, "getCurrentDimension");
 			getChunk = method(mapRegionClass, mapTileChunkClass, "getChunk", int.class, int.class);
 			setChunk = method(mapRegionClass, "setChunk", int.class, int.class, mapTileChunkClass);
-			getRegionLoadState = method(mapRegionClass, "getLoadState");
+			getRegionLoadState = method(mapRegionClass, byte.class, "getLoadState");
 			setRegionLoadState = method(mapRegionClass, "setLoadState", byte.class);
 			isBeingWritten = method(mapRegionClass, "isBeingWritten");
 			setBeingWritten = method(mapRegionClass, "setBeingWritten", boolean.class);
-			getLastSaveTime = method(leveledRegionClass, long.class, "getLastSaveTime");
-			setLastSaveTime = method(leveledRegionClass, "setLastSaveTime", long.class);
+			lastSaveTimeField = field(leveledRegionClass, "lastSaveTime", long.class);
 			isRefreshing = method(mapRegionClass, "isRefreshing");
 			requestRefresh = method(mapRegionClass, "requestRefresh", mapProcessorClass);
 			cancelRefresh = method(mapRegionClass, "cancelRefresh", mapProcessorClass);
 			mapTileChunkConstructor = constructor(mapTileChunkClass, mapRegionClass, int.class, int.class);
-			getChunkLoadState = method(mapTileChunkClass, "getLoadState");
+			getChunkLoadState = method(mapTileChunkClass, int.class, "getLoadState");
 			setChunkLoadState = method(mapTileChunkClass, "setLoadState", byte.class);
 			getTile = method(mapTileChunkClass, xaeroMapTileClass, "getTile", int.class, int.class);
 			setTile = method(mapTileChunkClass, "setTile", int.class, int.class, xaeroMapTileClass, blockStateShortShapeCacheClass);
@@ -396,13 +396,16 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 
 		private void scheduleSave(Object saveLoad, Object region, boolean originalBeingWritten)
 				throws ReflectiveOperationException {
-			long originalLastSaveTime = (Long) invoke(getLastSaveTime, region);
+			long originalLastSaveTime = lastSaveTimeField.getLong(region);
+			long now = System.currentTimeMillis();
 			try {
 				invoke(setBeingWritten, region, true);
-				invoke(updateSave, saveLoad, region, originalLastSaveTime + 60_001L);
-			} finally {
-				invoke(setLastSaveTime, region, originalLastSaveTime);
+				lastSaveTimeField.setLong(region, now - 60_001L);
+				invoke(updateSave, saveLoad, region, now);
+			} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
+				lastSaveTimeField.setLong(region, originalLastSaveTime);
 				invoke(setBeingWritten, region, originalBeingWritten);
+				throw exception;
 			}
 		}
 

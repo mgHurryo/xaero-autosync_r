@@ -42,6 +42,7 @@ public final class SharedMapNetworking {
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_INDEX_SNAPSHOT = XaeroMapsync_r.id("s2c_map_index_snapshot");
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_MERKLE_SNAPSHOT = XaeroMapsync_r.id("s2c_map_merkle_snapshot");
 	public static final net.minecraft.resources.ResourceLocation S2C_TILE_DATA = XaeroMapsync_r.id("s2c_tile_data");
+	public static final net.minecraft.resources.ResourceLocation S2C_TILE_UNAVAILABLE = XaeroMapsync_r.id("s2c_tile_unavailable");
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_NODE_RESPONSE = XaeroMapsync_r.id("s2c_map_node_response");
 	public static final net.minecraft.resources.ResourceLocation S2C_TRANSFER_PART = XaeroMapsync_r.id("s2c_transfer_part");
 	public static final net.minecraft.resources.ResourceLocation S2C_WAYPOINT_SNAPSHOT = XaeroMapsync_r.id("s2c_waypoint_snapshot");
@@ -148,6 +149,10 @@ public final class SharedMapNetworking {
 		ClientPlayNetworking.registerGlobalReceiver(S2C_TILE_DATA, (client, handler, buffer, responseSender) -> {
 			TileDataPayload payload = TileDataPayload.read(buffer);
 			client.execute(() -> SharedMapClient.handleTileData(payload));
+		});
+		ClientPlayNetworking.registerGlobalReceiver(S2C_TILE_UNAVAILABLE, (client, handler, buffer, responseSender) -> {
+			TileUnavailablePayload payload = TileUnavailablePayload.read(buffer);
+			client.execute(() -> SharedMapClient.handleTileUnavailable(payload));
 		});
 		ClientPlayNetworking.registerGlobalReceiver(S2C_MAP_NODE_RESPONSE, (client, handler, buffer, responseSender) -> {
 			MapNodeResponsePayload payload = MapNodeResponsePayload.read(buffer);
@@ -304,25 +309,24 @@ public final class SharedMapNetworking {
 	}
 
 	private static void sendTileDataIfAvailable(net.minecraft.server.level.ServerPlayer player, TileRequestPayload request) {
-		if (!SharedMapServer.exploredChunks().isExplored(request.dimension(), request.chunkX(), request.chunkZ())) {
-			sendWaypointError(player, "Tile is not explored");
-			return;
-		}
 		MapTile tile = SharedMapServer.tileData().find(request.dimension(), request.chunkX(), request.chunkZ()).orElse(null);
 		if (tile == null) {
+			if (!SharedMapServer.exploredChunks().isExplored(request.dimension(), request.chunkX(), request.chunkZ())) {
+				sendTileUnavailable(player, request, "Tile is not explored");
+				return;
+			}
 			net.minecraft.server.level.ServerLevel level = player.getServer().getLevel(net.minecraft.resources.ResourceKey.create(
 					net.minecraft.core.Registry.DIMENSION_REGISTRY, new net.minecraft.resources.ResourceLocation(request.dimension())));
 			if (level != null) tile = MapTileDebugRenderer.renderIfLoaded(level, request.chunkX(), request.chunkZ());
 			if (tile == null) {
-				sendWaypointError(player, "Tile is deferred until its chunk is naturally loaded");
+				sendTileUnavailable(player, request, "Tile is deferred until its chunk is naturally loaded");
 				return;
 			}
 			SharedMapServer.tileData().put(tile);
 		}
 		MapTileIndexEntry entry = SharedMapServer.mapTiles().upsert(tile);
-		if (entry.revision() <= request.knownRevision()) {
-			return;
-		}
+		// An explicit request means the client has the index entry but not the tile body.
+		// The index revision is therefore not proof that the body was already applied.
 		TileDataPayload payload = TileDataPayload.fromTile(tile, entry.revision(), SharedMapConfig.compression());
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		payload.write(buffer);
@@ -335,6 +339,13 @@ public final class SharedMapNetworking {
 			return;
 		}
 		ServerPlayNetworking.send(player, S2C_TILE_DATA, buffer);
+	}
+
+	private static void sendTileUnavailable(net.minecraft.server.level.ServerPlayer player, TileRequestPayload request,
+			String reason) {
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		new TileUnavailablePayload(request.dimension(), request.chunkX(), request.chunkZ(), reason).write(buffer);
+		ServerPlayNetworking.send(player, S2C_TILE_UNAVAILABLE, buffer);
 	}
 
 	private static void handleWaypointCreate(net.minecraft.server.level.ServerPlayer player, WaypointCreatePayload payload) {

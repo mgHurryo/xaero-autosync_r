@@ -80,7 +80,9 @@ public final class SharedMapServer {
 			if (++persistenceTicks >= 1_200) {
 				persistenceTicks = 0;
 				WAYPOINTS.save(server);
+				EXPLORED_CHUNKS.save(server);
 				DIRTY_CHUNKS.save(server);
+				MAP_TILES.save(server);
 				ACCESS.save(server);
 			}
 		});
@@ -90,6 +92,11 @@ public final class SharedMapServer {
 			EXPLORED_CHUNKS.load(server);
 			DIRTY_CHUNKS.load(server);
 			MAP_TILES.load(server);
+			int recoveredTiles = TILE_DATA.recoverIndex(MAP_TILES);
+			if (recoveredTiles > 0) {
+				XaeroMapsync_r.LOGGER.info("Recovered map tile index from {} cached tiles", recoveredTiles);
+				MAP_TILES.save(server);
+			}
 			ACCESS.load(server);
 		});
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {

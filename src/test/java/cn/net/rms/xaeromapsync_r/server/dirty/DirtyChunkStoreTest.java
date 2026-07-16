@@ -128,6 +128,63 @@ final class DirtyChunkStoreTest {
 	}
 
 	@Test
+	void moddedClientDiscoveryWaitsForNativeSnapshotBeforeServerFallback() {
+		DirtyChunkStore store = new DirtyChunkStore(false);
+
+		assertTrue(store.markDiscovered("minecraft:overworld", 3, -4, true));
+		assertEquals(1, store.statistics().active());
+		assertTrue(store.claimStableDirtyChunks(1).isEmpty());
+
+		for (int tick = 0; tick < 200; tick++) store.advance();
+		assertEquals(1, store.claimStableDirtyChunks(1).size());
+	}
+
+	@Test
+	void clientSnapshotOnlyClearsTheGenerationItObserved() {
+		DirtyChunkStore store = new DirtyChunkStore(false);
+		store.markDiscovered("minecraft:overworld", 2, 5, true);
+		long generation = store.clientTileGeneration("minecraft:overworld", 2, 5);
+
+		store.markDirty("minecraft:overworld", new BlockPos(2 << 4, 64, 5 << 4));
+
+		assertFalse(store.confirmClientTile("minecraft:overworld", 2, 5, generation));
+		assertEquals(1, store.totalCount());
+		long latest = store.clientTileGeneration("minecraft:overworld", 2, 5);
+		assertTrue(store.confirmClientTile("minecraft:overworld", 2, 5, latest));
+		assertEquals(0, store.totalCount());
+	}
+
+	@Test
+	void clientCommitActionRunsOnlyForTheCurrentGeneration() {
+		DirtyChunkStore store = new DirtyChunkStore(false);
+		store.markDiscovered("minecraft:overworld", 2, 5, true);
+		long generation = store.clientTileGeneration("minecraft:overworld", 2, 5);
+		java.util.concurrent.atomic.AtomicBoolean committed = new java.util.concurrent.atomic.AtomicBoolean();
+		store.markDirty("minecraft:overworld", new BlockPos(2 << 4, 64, 5 << 4));
+
+		assertFalse(store.commitClientTile("minecraft:overworld", 2, 5, generation,
+				() -> committed.compareAndSet(false, true)));
+		assertFalse(committed.get());
+		long latest = store.clientTileGeneration("minecraft:overworld", 2, 5);
+		assertTrue(store.commitClientTile("minecraft:overworld", 2, 5, latest,
+				() -> committed.compareAndSet(false, true)));
+		assertTrue(committed.get());
+	}
+
+	@Test
+	void clientCommitCannotReplaceAnInFlightServerFallback() {
+		DirtyChunkStore store = stableStore(1);
+		DirtyChunkStore.StableDirtyChunk claimed = store.claimStableDirtyChunks(1).get(0);
+		java.util.concurrent.atomic.AtomicBoolean committed = new java.util.concurrent.atomic.AtomicBoolean();
+		long generation = store.clientTileGeneration(claimed.dimension(), claimed.chunkX(), claimed.chunkZ());
+
+		assertFalse(store.commitClientTile(claimed.dimension(), claimed.chunkX(), claimed.chunkZ(), generation,
+				() -> committed.compareAndSet(false, true)));
+		assertFalse(committed.get());
+		assertTrue(store.isCurrentClaim(claimed));
+	}
+
+	@Test
 	void concurrentClaimersNeverReceiveTheSameStableChunk() throws Exception {
 		int chunkCount = 40;
 		DirtyChunkStore store = stableStore(chunkCount);

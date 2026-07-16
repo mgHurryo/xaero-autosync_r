@@ -77,4 +77,8 @@ public final class TileDataPayload {
 	public long revision() {
 		return revision;
 	}
+
+	public String compression() { return compression; }
+
+	public byte[] surfacePayload() { return surfacePayload.clone(); }
 }

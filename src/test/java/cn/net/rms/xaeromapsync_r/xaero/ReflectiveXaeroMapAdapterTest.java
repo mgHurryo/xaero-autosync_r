@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
@@ -78,11 +79,13 @@ final class ReflectiveXaeroMapAdapterTest {
 
 		assertEquals("(Ljava/lang/Runnable;)V", signature.methodDescriptor("waitForLoadingToFinish"));
 		assertEquals("(II)Lxaero/map/region/MapTile;", signature.methodDescriptor("getMapTile"));
+		assertEquals("()Ljava/lang/String;", signature.methodDescriptor("getCurrentDimension"));
 		assertTrue(saveLoad.hasMethodDescriptor("requestLoad", "(Lxaero/map/region/MapRegion;Ljava/lang/String;)V"));
 		assertEquals("Ljava/util/ArrayList;", saveLoad.fieldDescriptor("toLoad"));
 		assertEquals("(Lxaero/map/region/LeveledRegion;)Z", saveLoad.methodDescriptor("toCacheContains"));
 		assertEquals("(Lxaero/map/region/LeveledRegion;)V", saveLoad.methodDescriptor("requestCache"));
 		assertEquals("()Z", region.methodDescriptor("isWritingPaused"));
+		assertEquals("Ljava/lang/Object;", region.fieldDescriptor("writerThreadPauseSync"));
 		ClassSignature leveledRegion = readClassSignature("xaero/map/region/LeveledRegion.class");
 		assertEquals("()Z", leveledRegion.methodDescriptor("recacheHasBeenRequested"));
 		ClassSignature tile = readClassSignature("xaero/map/region/MapTile.class");
@@ -113,6 +116,52 @@ final class ReflectiveXaeroMapAdapterTest {
 		assertEquals("(Lxaero/map/region/Overlay;)V", mapBlock.methodDescriptor("addOverlay"));
 		assertEquals("(Lnet/minecraft/class_2680;IILxaero/map/biome/BiomeKey;BZZ)V",
 				mapBlock.methodDescriptor("write"));
+		assertEquals("(Z)V", mapBlock.methodDescriptor("setSlopeUnknown"));
+	}
+
+	@Test
+	void pinnedXaeroJarExposesNativeSnapshotReadSignatures() throws IOException {
+		ClassSignature tile = readClassSignature("xaero/map/region/MapTile.class");
+		ClassSignature pixel = readClassSignature("xaero/map/region/MapPixel.class");
+		ClassSignature block = readClassSignature("xaero/map/region/MapBlock.class");
+		ClassSignature biome = readClassSignature("xaero/map/biome/BiomeKey.class");
+		ClassSignature overlay = readClassSignature("xaero/map/region/Overlay.class");
+		ClassSignature region = readClassSignature("xaero/map/region/MapRegion.class");
+		ClassSignature chunk = readClassSignature("xaero/map/region/MapTileChunk.class");
+		ClassSignature core = readClassSignature("xaero/map/core/XaeroWorldMapCore.class");
+
+		assertEquals("(II)Lxaero/map/region/MapTileChunk;", region.methodDescriptor("getChunk"));
+		assertEquals("()I", chunk.methodDescriptor("getLoadState"));
+		assertEquals("(II)Lxaero/map/region/MapTile;", chunk.methodDescriptor("getTile"));
+		assertEquals("(II)Lxaero/map/region/MapBlock;", tile.methodDescriptor("getBlock"));
+		assertEquals("()Lnet/minecraft/class_2680;", pixel.methodDescriptor("getState"));
+		assertEquals("B", pixel.fieldDescriptor("light"));
+		assertEquals("Z", pixel.fieldDescriptor("glowing"));
+		assertEquals("()I", block.methodDescriptor("getHeight"));
+		assertEquals("()I", block.methodDescriptor("getTopHeight"));
+		assertEquals("()Lxaero/map/biome/BiomeKey;", block.methodDescriptor("getBiome"));
+		assertEquals("()Ljava/util/ArrayList;", block.methodDescriptor("getOverlays"));
+		assertEquals("()Z", block.methodDescriptor("isCaveBlock"));
+		assertEquals("(Lnet/minecraft/class_2378;)Lnet/minecraft/class_2960;",
+				biome.methodDescriptor("getIdentifier"));
+		assertEquals("()F", overlay.methodDescriptor("getTransparency"));
+		assertEquals("()I", overlay.methodDescriptor("getOpacity"));
+		assertEquals("Ljava/lang/reflect/Field;", core.fieldDescriptor("chunkCleanField"));
+	}
+
+	@Test
+	void localSnapshotIsDelegatedToRuntime() {
+		MapTile snapshot = tile(256);
+		ReflectiveXaeroMapAdapter.XaeroRuntime runtime = new ReflectiveXaeroMapAdapter.XaeroRuntime() {
+			@Override public void apply(MapTile ignored) { }
+			@Override public Optional<MapTile> localTile(String dimension, int chunkX, int chunkZ) {
+				return Optional.of(snapshot);
+			}
+		};
+		ReflectiveXaeroMapAdapter adapter = new ReflectiveXaeroMapAdapter(runtime);
+
+		assertEquals(snapshot, adapter.localTile("minecraft:overworld", -1, -5).orElseThrow());
+		assertTrue(adapter.isAvailable());
 	}
 
 	@Test

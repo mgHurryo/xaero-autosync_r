@@ -52,6 +52,8 @@ public final class SharedMapClient {
 	private static final Map<String, Long> IN_FLIGHT_TILE_REQUESTS = new HashMap<>();
 	private static final Map<String, Long> LOCAL_TILE_REVISIONS = new HashMap<>();
 	private static final Map<String, Long> LOCAL_TILE_HINT_TIMES = new HashMap<>();
+	private static final Map<String, Long> LOCAL_TILE_SCAN_TIMES = new HashMap<>();
+	private static final Map<String, Long> LOCAL_TILE_UPLOAD_HASHES = new HashMap<>();
 	private static final ArrayDeque<PendingTileApply> TILE_APPLY_QUEUE = new ArrayDeque<>();
 	private static final Set<String> PENDING_TILE_APPLIES = new HashSet<>();
 	private static final ArrayDeque<MerkleNodeAddress> MAP_NODE_QUEUE = new ArrayDeque<>();
@@ -62,9 +64,12 @@ public final class SharedMapClient {
 	private static final long TILE_APPLY_BUDGET_NANOS = 8_000_000L;
 	private static final long TILE_APPLY_RETRY_MILLIS = 250L;
 	private static final long MAX_TILE_APPLY_RETRY_MILLIS = 5_000L;
+	private static final long LOCAL_TILE_SCAN_COOLDOWN_MILLIS = 1_000L;
 	private static final long LOCAL_TILE_HINT_COOLDOWN_MILLIS = 300_000L;
-	private static final int LOCAL_TILE_HINT_RADIUS = 4;
-	private static final int MAX_LOCAL_TILE_HINTS_PER_SCAN = 6;
+	private static final int LOCAL_TILE_UPLOAD_RADIUS = 12;
+	private static final int MAX_LOCAL_TILE_UPLOADS_PER_SCAN = 64;
+	private static final int LOCAL_TILE_UPLOAD_SCAN_INTERVAL_TICKS = 5;
+	private static final long LOCAL_TILE_UPLOAD_BUDGET_NANOS = 8_000_000L;
 	private static int tileRequestsInFlight;
 	private static int tileCacheLookupsInFlight;
 	private static XaeroWaypointAdapter waypointAdapter;
@@ -311,8 +316,6 @@ public final class SharedMapClient {
 
 	private static void completeLocalTile(PendingTileApply pending) {
 		LOCAL_TILE_REVISIONS.merge(pending.key, pending.revision, Math::max);
-		reportLocalTileReady(pending.tile.dimension(), pending.tile.chunkX(), pending.tile.chunkZ(),
-				pending.tile.contentHash());
 		PENDING_TILE_APPLIES.remove(pending.key);
 		removeQueuedRevisionAtMost(pending.key, pending.revision);
 		lastMapProgressMillis = System.currentTimeMillis();
@@ -321,34 +324,56 @@ public final class SharedMapClient {
 	}
 
 	private static void reportNativeLocalTiles() {
-		if (clientTicks % 20 != 0 || !connectedToSharedMapServer || !previousMapSyncEnabled
+		if (clientTicks % LOCAL_TILE_UPLOAD_SCAN_INTERVAL_TICKS != 0 || !connectedToSharedMapServer || !previousMapSyncEnabled
 				|| mapAdapter == null || !mapAdapter.isAvailable()) return;
 		Minecraft minecraft = Minecraft.getInstance();
 		if (minecraft.level == null || minecraft.player == null) return;
 		String dimension = minecraft.level.dimension().location().toString();
 		net.minecraft.world.level.ChunkPos center = minecraft.player.chunkPosition();
 		long now = System.currentTimeMillis();
+		long deadline = System.nanoTime() + LOCAL_TILE_UPLOAD_BUDGET_NANOS;
 		int sent = 0;
-		for (int radius = 0; radius <= LOCAL_TILE_HINT_RADIUS && sent < MAX_LOCAL_TILE_HINTS_PER_SCAN; radius++) {
-			for (int dx = -radius; dx <= radius && sent < MAX_LOCAL_TILE_HINTS_PER_SCAN; dx++) {
-				for (int dz = -radius; dz <= radius && sent < MAX_LOCAL_TILE_HINTS_PER_SCAN; dz++) {
+		outer:
+		for (int radius = 0; radius <= LOCAL_TILE_UPLOAD_RADIUS && sent < MAX_LOCAL_TILE_UPLOADS_PER_SCAN; radius++) {
+			for (int dx = -radius; dx <= radius && sent < MAX_LOCAL_TILE_UPLOADS_PER_SCAN; dx++) {
+				for (int dz = -radius; dz <= radius && sent < MAX_LOCAL_TILE_UPLOADS_PER_SCAN; dz++) {
+					if (System.nanoTime() >= deadline) break outer;
 					if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) continue;
 					int chunkX = center.x + dx;
 					int chunkZ = center.z + dz;
 					String key = tileKey(dimension, chunkX, chunkZ);
-					long previous = LOCAL_TILE_HINT_TIMES.getOrDefault(key, 0L);
-					if (now - previous < LOCAL_TILE_HINT_COOLDOWN_MILLIS) continue;
+					long previous = LOCAL_TILE_SCAN_TIMES.getOrDefault(key, 0L);
+					if (now - previous < LOCAL_TILE_SCAN_COOLDOWN_MILLIS) continue;
+					LOCAL_TILE_SCAN_TIMES.put(key, now);
 					if (mapAdapter.localTileState(dimension, chunkX, chunkZ) != XaeroMapAdapter.LocalTileState.READY) continue;
-					long contentHash = MAP_TILES.find(dimension, chunkX, chunkZ)
-							.map(MapTileIndexEntry::contentHash).orElse(0L);
-					reportLocalTileReady(dimension, chunkX, chunkZ, contentHash);
-					sent++;
+					if (reportLocalTile(dimension, chunkX, chunkZ)) sent++;
 				}
 			}
 		}
 		if (LOCAL_TILE_HINT_TIMES.size() > 4_096) {
 			LOCAL_TILE_HINT_TIMES.entrySet().removeIf(entry -> now - entry.getValue() >= LOCAL_TILE_HINT_COOLDOWN_MILLIS);
 		}
+		if (LOCAL_TILE_SCAN_TIMES.size() > 4_096) {
+			LOCAL_TILE_SCAN_TIMES.entrySet().removeIf(entry -> now - entry.getValue() >= LOCAL_TILE_SCAN_COOLDOWN_MILLIS);
+		}
+	}
+
+	private static boolean reportLocalTile(String dimension, int chunkX, int chunkZ) {
+		String key = tileKey(dimension, chunkX, chunkZ);
+		Optional<MapTile> local = mapAdapter.localTile(dimension, chunkX, chunkZ);
+		if (local.isEmpty()) {
+			reportLocalTileReady(dimension, chunkX, chunkZ, 0L);
+			return false;
+		}
+		MapTile tile = local.get();
+		long now = System.currentTimeMillis();
+		long previousHash = LOCAL_TILE_UPLOAD_HASHES.getOrDefault(key, Long.MIN_VALUE);
+		long previousTime = LOCAL_TILE_HINT_TIMES.getOrDefault(key, 0L);
+		if (previousHash == tile.contentHash() && now - previousTime < LOCAL_TILE_HINT_COOLDOWN_MILLIS) return false;
+		SharedMapNetworking.sendLocalTileData(tile);
+		LOCAL_TILE_UPLOAD_HASHES.put(key, tile.contentHash());
+		LOCAL_TILE_HINT_TIMES.put(key, now);
+		return true;
 	}
 
 	private static void reportLocalTileReady(String dimension, int chunkX, int chunkZ, long contentHash) {
@@ -772,6 +797,8 @@ public final class SharedMapClient {
 		PENDING_TILE_APPLIES.clear();
 		LOCAL_TILE_REVISIONS.clear();
 		LOCAL_TILE_HINT_TIMES.clear();
+		LOCAL_TILE_SCAN_TIMES.clear();
+		LOCAL_TILE_UPLOAD_HASHES.clear();
 		PENDING_MAP_REQUEST_IDS.clear();
 		MERKLE.replace(java.util.List.of());
 		tileRequestsInFlight = 0;

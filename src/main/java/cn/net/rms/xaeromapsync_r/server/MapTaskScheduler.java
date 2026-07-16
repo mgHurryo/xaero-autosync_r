@@ -72,11 +72,12 @@ public final class MapTaskScheduler {
 					: SharedMapConfig.dirtyChunksPerTick();
 			int renderLimit = renderLimit(configuredBudget, SharedMapConfig.maxTileRendersPerTick());
 			int scanBudget = Math.max(renderLimit, SharedMapConfig.dirtyChunkScanPerTick());
+			long targetTickNanos = Math.max(0L, SharedMapConfig.highLoadMsptThreshold() - 2L) * 1_000_000L;
 			long workBudgetNanos = adaptiveMapWorkBudgetNanos(
 					elapsedBeforeMapWork,
 					lastTickNanos,
 					lastMapWorkNanos,
-					SharedMapConfig.highLoadMsptThreshold() * 1_000_000L,
+					targetTickNanos,
 					SharedMapConfig.mapRenderBudgetMillis() * 1_000_000L);
 			if (renderLimit > 0 && workBudgetNanos > 0L) {
 				long deadlineNanos = taskStartedNanos + workBudgetNanos;
@@ -130,6 +131,7 @@ public final class MapTaskScheduler {
 	}
 
 	private boolean recalculate(DirtyChunkStore.StableDirtyChunk chunk) {
+		if (!tileData.hasWriteCapacity(chunk.dimension(), chunk.chunkX(), chunk.chunkZ())) return false;
 		ServerLevel level = level(chunk.dimension());
 		if (level == null) {
 			return false;
@@ -164,6 +166,11 @@ public final class MapTaskScheduler {
 			byte[] surfacePayload) {
 		if (!dirtyChunks.isCurrentClaim(chunk)) {
 			processor.completeRecalculation(chunk, true);
+			return;
+		}
+		MapTile latestBody = tileData.find(tile.dimension(), tile.chunkX(), tile.chunkZ()).orElse(null);
+		if (latestBody == null || latestBody.contentHash() != tile.contentHash()) {
+			processor.completeRecalculation(chunk, false);
 			return;
 		}
 		MapTileIndexEntry previous;

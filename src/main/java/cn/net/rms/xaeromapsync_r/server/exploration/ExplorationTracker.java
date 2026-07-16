@@ -48,7 +48,8 @@ public final class ExplorationTracker {
 			}
 			boolean firstObservation = SharedMapServer.exploredChunks().markExplored(dimension, chunkX, chunkZ);
 			if (firstObservation || SharedMapServer.mapTiles().find(dimension, chunkX, chunkZ).isEmpty()) {
-				SharedMapServer.dirtyChunks().markDiscovered(dimension, chunkX, chunkZ);
+				SharedMapServer.dirtyChunks().markDiscovered(dimension, chunkX, chunkZ,
+						SharedMapServer.hasAcceptedClient(player.getUUID()));
 			}
 		}
 	}

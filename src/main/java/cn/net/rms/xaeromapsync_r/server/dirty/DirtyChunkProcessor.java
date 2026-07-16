@@ -1,10 +1,13 @@
 package cn.net.rms.xaeromapsync_r.server.dirty;
 
 import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 public final class DirtyChunkProcessor {
+	private static final int CLAIM_PAGE_SIZE = 64;
 	private final DirtyChunkStore store;
 	private final LoadedChunkProbe loadedChunkProbe;
 	private final ChunkRecalculator recalculator;
@@ -42,71 +45,95 @@ public final class DirtyChunkProcessor {
 		if (renderBudget == 0 || scanBudget == 0) {
 			return recordResult(renderBudget, List.of(), 0, 0, 0, 0);
 		}
-		List<DirtyChunkStore.StableDirtyChunk> chunks = store.claimStableDirtyChunks(scanBudget, scanBudget);
 		int submittedThisTick = 0;
 		int deferredThisTick = 0;
 		int failedThisTick = 0;
 		int staleThisTick = 0;
 		int renderAttempts = 0;
+		int claimedThisTick = 0;
+		boolean continueProcessing = true;
+		Set<String> visited = new HashSet<>();
 
-		for (DirtyChunkStore.StableDirtyChunk chunk : chunks) {
-			if (renderAttempts >= renderBudget || !canContinueRendering.getAsBoolean()) {
-				if (store.defer(chunk)) {
-					deferredThisTick++;
-				} else {
-					staleThisTick++;
+		while (continueProcessing && claimedThisTick < scanBudget && renderAttempts < renderBudget
+				&& canContinueRendering.getAsBoolean()) {
+			int pageSize = Math.min(CLAIM_PAGE_SIZE, scanBudget - claimedThisTick);
+			List<DirtyChunkStore.StableDirtyChunk> chunks = store.claimStableDirtyChunks(pageSize, pageSize);
+			if (chunks.isEmpty()) break;
+			claimedThisTick += chunks.size();
+			int newChunksInPage = 0;
+			for (int chunkIndex = 0; chunkIndex < chunks.size(); chunkIndex++) {
+				DirtyChunkStore.StableDirtyChunk chunk = chunks.get(chunkIndex);
+				String chunkKey = chunk.dimension() + '\0' + chunk.chunkX() + '\0' + chunk.chunkZ();
+				if (!visited.add(chunkKey)) {
+					if (store.defer(chunk)) deferredThisTick++;
+					else staleThisTick++;
+					continue;
 				}
-				continue;
-			}
-			boolean loaded;
-			try {
-				loaded = loadedChunkProbe.isLoaded(chunk);
-			} catch (RuntimeException exception) {
-				logFailure("check loaded state for", chunk, exception);
-				if (finish(chunk, false, false) == CompletionResult.RETAINED) {
+				newChunksInPage++;
+				if (renderAttempts >= renderBudget || !canContinueRendering.getAsBoolean()) {
+					for (int remaining = chunkIndex; remaining < chunks.size(); remaining++) {
+						if (store.defer(chunks.get(remaining))) deferredThisTick++;
+						else staleThisTick++;
+					}
+					continueProcessing = false;
+					break;
+				}
+				boolean loaded;
+				try {
+					loaded = loadedChunkProbe.isLoaded(chunk);
+				} catch (RuntimeException exception) {
+					logFailure("check loaded state for", chunk, exception);
+					if (finish(chunk, false, false) == CompletionResult.RETAINED) {
+						failedThisTick++;
+					} else {
+						staleThisTick++;
+					}
+					continue;
+				}
+				if (!loaded) {
+					if (store.defer(chunk)) {
+						deferredThisTick++;
+					} else {
+						staleThisTick++;
+					}
+					continue;
+				}
+
+				renderAttempts++;
+				boolean submitted;
+				try {
+					submitted = recalculator.recalculate(chunk);
+				} catch (RuntimeException exception) {
+					logFailure("recalculate", chunk, exception);
+					submitted = false;
+				}
+				if (submitted) {
+					submittedThisTick++;
+				} else if (finish(chunk, false, false) == CompletionResult.RETAINED) {
 					failedThisTick++;
 				} else {
 					staleThisTick++;
 				}
-				continue;
 			}
-			if (!loaded) {
-				if (store.defer(chunk)) {
-					deferredThisTick++;
-				} else {
-					staleThisTick++;
-				}
-				continue;
-			}
-
-			renderAttempts++;
-			boolean submitted;
-			try {
-				submitted = recalculator.recalculate(chunk);
-			} catch (RuntimeException exception) {
-				logFailure("recalculate", chunk, exception);
-				submitted = false;
-			}
-			if (submitted) {
-				submittedThisTick++;
-			} else if (finish(chunk, false, false) == CompletionResult.RETAINED) {
-				failedThisTick++;
-			} else {
-				staleThisTick++;
-			}
+			if (newChunksInPage == 0) break;
 		}
 
-		return recordResult(renderBudget, chunks, submittedThisTick, deferredThisTick, failedThisTick, staleThisTick);
+		return recordResult(renderBudget, claimedThisTick, submittedThisTick, deferredThisTick, failedThisTick, staleThisTick);
 	}
 
 	private TickResult recordResult(int renderBudget, List<DirtyChunkStore.StableDirtyChunk> chunks,
 			int submittedThisTick, int deferredThisTick, int failedThisTick, int staleThisTick) {
+		return recordResult(renderBudget, chunks.size(), submittedThisTick, deferredThisTick, failedThisTick, staleThisTick);
+	}
+
+	private TickResult recordResult(int renderBudget, int claimedThisTick,
+			int submittedThisTick, int deferredThisTick, int failedThisTick, int staleThisTick) {
 		ticks++;
-		claimed += chunks.size();
+		claimed += claimedThisTick;
 		deferred += deferredThisTick;
 		failed += failedThisTick;
 		stale += staleThisTick;
-		return new TickResult(renderBudget, chunks.size(), submittedThisTick, deferredThisTick, failedThisTick, staleThisTick);
+		return new TickResult(renderBudget, claimedThisTick, submittedThisTick, deferredThisTick, failedThisTick, staleThisTick);
 	}
 
 	/** Completes an accepted recalculation after its durable tile write and index publication finish. */

@@ -20,6 +20,7 @@ final class TileDataPayloadTest {
 		TileDataPayload decoded = TileDataPayload.read(buffer);
 
 		assertEquals(42L, decoded.revision());
+		assertEquals("zlib", decoded.compression());
 		assertEquals(tile.contentHash(), decoded.tile().contentHash());
 		assertEquals(tile.overlays(), decoded.tile().overlays());
 		assertEquals(tile.dimension(), decoded.tile().dimension());

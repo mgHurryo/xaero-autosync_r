@@ -83,6 +83,46 @@ public final class MapTileDataStoreTest {
 	}
 
 	@Test
+	void laterSnapshotHashReplacesEarlierSnapshotForTheSameCoordinate() throws Exception {
+		MapTile first = tile("minecraft:overworld", 8, -3, 30);
+		MapTile latest = tile("minecraft:overworld", 8, -3, 31);
+		MapTileDataStore store = new MapTileDataStore();
+		store.start(tempDir);
+		CountDownLatch completed = new CountDownLatch(2);
+
+		assertTrue(store.putAsynchronously(first, result -> completed.countDown()));
+		assertTrue(store.putAsynchronously(latest, result -> completed.countDown()));
+		assertTrue(completed.await(5, TimeUnit.SECONDS));
+		assertEquals(latest.contentHash(), store.find(latest.dimension(), latest.chunkX(), latest.chunkZ())
+				.orElseThrow().contentHash());
+		store.stop();
+	}
+
+	@Test
+	void stagedSnapshotDoesNotReplaceTheCurrentBodyUntilCommitted() throws Exception {
+		MapTile current = tile("minecraft:overworld", 8, -3, 30);
+		MapTile latest = tile("minecraft:overworld", 8, -3, 31);
+		MapTileDataStore store = new MapTileDataStore();
+		store.start(tempDir);
+		assertTrue(store.putSynchronously(current));
+		CountDownLatch completed = new CountDownLatch(1);
+		java.util.concurrent.atomic.AtomicReference<MapTileDataStore.StagedTile> staged =
+				new java.util.concurrent.atomic.AtomicReference<>();
+
+		assertTrue(store.stageAsynchronously(latest, result -> {
+			staged.set(result.orElse(null));
+			completed.countDown();
+		}));
+		assertTrue(completed.await(5, TimeUnit.SECONDS));
+		assertEquals(current.contentHash(), store.find(current.dimension(), current.chunkX(), current.chunkZ())
+				.orElseThrow().contentHash());
+		assertTrue(store.commitStaged(staged.get()));
+		assertEquals(latest.contentHash(), store.find(latest.dimension(), latest.chunkX(), latest.chunkZ())
+				.orElseThrow().contentHash());
+		store.stop();
+	}
+
+	@Test
 	void asynchronousWriteFailureDoesNotPublishMemoryTile() throws Exception {
 		Path blockedRoot = tempDir.resolve("async-blocked-root");
 		Files.writeString(blockedRoot, "not a directory");

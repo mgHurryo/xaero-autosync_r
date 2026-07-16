@@ -1,6 +1,7 @@
 package cn.net.rms.xaeromapsync_r.server.dirty;
 
 import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
+import cn.net.rms.xaeromapsync_r.config.SharedMapConfig;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import java.io.IOException;
@@ -19,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
@@ -61,12 +63,16 @@ public final class DirtyChunkStore {
 	 * would leave ordinary traversal absent from the shared map.
 	 */
 	public synchronized boolean markDiscovered(String dimension, int chunkX, int chunkZ) {
+		return markDiscovered(dimension, chunkX, chunkZ, false);
+	}
+
+	public synchronized boolean markDiscovered(String dimension, int chunkX, int chunkZ, boolean awaitClientTile) {
 		String key = key(dimension, chunkX, chunkZ);
 		if (records.containsKey(key)) {
 			return false;
 		}
 		DirtyChunkRecord record = new DirtyChunkRecord(dimension, chunkX, chunkZ, currentTick);
-		record.restore(DirtyActivityState.STABLE, currentTick, currentTick, null);
+		if (!awaitClientTile) record.restore(DirtyActivityState.STABLE, currentTick, currentTick, null);
 		records.put(key, record);
 		generations.put(key, 0L);
 		return true;
@@ -227,6 +233,28 @@ public final class DirtyChunkStore {
 		return hasCurrentClaim(claimedChunk);
 	}
 
+	public synchronized long clientTileGeneration(String dimension, int chunkX, int chunkZ) {
+		return generations.getOrDefault(key(dimension, chunkX, chunkZ), -1L);
+	}
+
+	public synchronized boolean confirmClientTile(String dimension, int chunkX, int chunkZ, long expectedGeneration) {
+		return commitClientTile(dimension, chunkX, chunkZ, expectedGeneration, () -> true);
+	}
+
+	public synchronized boolean commitClientTile(String dimension, int chunkX, int chunkZ, long expectedGeneration,
+			BooleanSupplier commit) {
+		if (commit == null) throw new IllegalArgumentException("Client tile commit action is required");
+		String key = key(dimension, chunkX, chunkZ);
+		if (generations.getOrDefault(key, -1L) != expectedGeneration) return false;
+		if (inFlight.containsKey(key)) return false;
+		if (!commit.getAsBoolean()) return false;
+		records.remove(key);
+		generations.remove(key);
+		inFlight.remove(key);
+		priorityClaims.remove(key);
+		return true;
+	}
+
 	/**
 	 * @deprecated Stable records require explicit processing confirmation and cannot be flushed safely.
 	 */
@@ -289,7 +317,7 @@ public final class DirtyChunkStore {
 		synchronized (this) {
 			currentTick++;
 			for (DirtyChunkRecord record : records.values()) {
-				record.advance(currentTick);
+				record.advance(currentTick, SharedMapConfig.stormCooldownTicks(), SharedMapConfig.stableTicks());
 			}
 		}
 	}

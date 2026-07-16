@@ -28,12 +28,16 @@ public final class DirtyChunkRecord {
 	}
 
 	public void advance(long tick) {
+		advance(tick, 100, 200);
+	}
+
+	public void advance(long tick, int stormCooldownTicks, int stableTicks) {
 		long quietTicks = tick - lastDirtyTick;
-		if (state == DirtyActivityState.STORM && quietTicks >= 100L) {
+		if (state == DirtyActivityState.STORM && quietTicks >= stormCooldownTicks) {
 			state = DirtyActivityState.COOLDOWN;
 			return;
 		}
-		if ((state == DirtyActivityState.ACTIVE || state == DirtyActivityState.COOLDOWN) && quietTicks >= 200L) {
+		if ((state == DirtyActivityState.ACTIVE || state == DirtyActivityState.COOLDOWN) && quietTicks >= stableTicks) {
 			state = DirtyActivityState.STABLE;
 			changesInWindow = 0;
 		}

@@ -2,6 +2,7 @@ package cn.net.rms.xaeromapsync_r.xaero;
 
 import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 import cn.net.rms.xaeromapsync_r.map.MapTile;
+import cn.net.rms.xaeromapsync_r.map.MapTileHasher;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -11,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
 import net.minecraft.client.Minecraft;
@@ -111,6 +113,19 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		}
 	}
 
+	@Override
+	public Optional<MapTile> localTile(String dimension, int chunkX, int chunkZ) {
+		if (!available) return Optional.empty();
+		try {
+			return runtime.localTile(dimension, chunkX, chunkZ);
+		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
+			if (isNotReady(exception)) return Optional.empty();
+			available = false;
+			XaeroMapsync_r.LOGGER.error("Xaero local map tile extraction failed; adapter disabled for this session", exception);
+			return Optional.empty();
+		}
+	}
+
 	private static boolean isNotReady(Throwable exception) {
 		return exception instanceof IllegalStateException && exception.getMessage() != null
 				&& (exception.getMessage().contains("not initialized")
@@ -190,6 +205,11 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				throws ReflectiveOperationException {
 			return LocalTileState.REMOTE;
 		}
+
+		default Optional<MapTile> localTile(String dimension, int chunkX, int chunkZ)
+				throws ReflectiveOperationException {
+			return Optional.empty();
+		}
 	}
 
 	private static final class Xaero1251Runtime implements XaeroRuntime {
@@ -236,8 +256,21 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Method setWorldInterpretationVersion;
 		private final Method isTileLoaded;
 		private final Method wasTileWrittenOnce;
+		private final Method getMapBlock;
+		private final Method getPixelState;
+		private final Field pixelLightField;
+		private final Field pixelGlowingField;
+		private final Method getBlockHeight;
+		private final Method getBlockTopHeight;
+		private final Method getBlockBiome;
+		private final Method getBlockOverlays;
+		private final Method isCaveBlock;
+		private final Method getBiomeIdentifier;
+		private final Method getOverlayTransparency;
+		private final Method getOverlayOpacity;
 		private final Constructor<?> mapBlockConstructor;
 		private final Method writeBlock;
+		private final Method setSlopeUnknown;
 		private final Constructor<?> overlayConstructor;
 		private final Method addOverlay;
 		private final Method increaseOverlayOpacity;
@@ -267,6 +300,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			xaeroMapTileClass = Class.forName("xaero.map.region.MapTile", false, loader);
 			mapBlockClass = Class.forName("xaero.map.region.MapBlock", false, loader);
 			Class<?> overlayClass = Class.forName("xaero.map.region.Overlay", false, loader);
+			Class<?> mapPixelClass = Class.forName("xaero.map.region.MapPixel", false, loader);
 			biomeKeyClass = Class.forName("xaero.map.biome.BiomeKey", false, loader);
 			Class<?> biomeKeyManagerClass = Class.forName("xaero.map.biome.BiomeKeyManager", false, loader);
 			Class<?> mapTilePoolClass = Class.forName("xaero.map.pool.MapTilePool", false, loader);
@@ -310,8 +344,21 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			setWorldInterpretationVersion = method(xaeroMapTileClass, "setWorldInterpretationVersion", int.class);
 			isTileLoaded = method(xaeroMapTileClass, "isLoaded");
 			wasTileWrittenOnce = method(xaeroMapTileClass, "wasWrittenOnce");
+			getMapBlock = method(xaeroMapTileClass, mapBlockClass, "getBlock", int.class, int.class);
+			getPixelState = method(mapPixelClass, BlockState.class, "getState");
+			pixelLightField = field(mapPixelClass, "light", byte.class);
+			pixelGlowingField = field(mapPixelClass, "glowing", boolean.class);
+			getBlockHeight = method(mapBlockClass, int.class, "getHeight");
+			getBlockTopHeight = method(mapBlockClass, int.class, "getTopHeight");
+			getBlockBiome = method(mapBlockClass, biomeKeyClass, "getBiome");
+			getBlockOverlays = method(mapBlockClass, java.util.ArrayList.class, "getOverlays");
+			isCaveBlock = method(mapBlockClass, boolean.class, "isCaveBlock");
+			getBiomeIdentifier = method(biomeKeyClass, ResourceLocation.class, "getIdentifier", Registry.class);
+			getOverlayTransparency = method(overlayClass, float.class, "getTransparency");
+			getOverlayOpacity = method(overlayClass, int.class, "getOpacity");
 			mapBlockConstructor = constructor(mapBlockClass);
 			writeBlock = method(mapBlockClass, "write", BlockState.class, int.class, int.class, biomeKeyClass, byte.class, boolean.class, boolean.class);
+			setSlopeUnknown = method(mapBlockClass, "setSlopeUnknown", boolean.class);
 			overlayConstructor = constructor(overlayClass, BlockState.class, float.class, byte.class, boolean.class);
 			addOverlay = method(mapBlockClass, "addOverlay", overlayClass);
 			increaseOverlayOpacity = method(overlayClass, "increaseOpacity", int.class);
@@ -355,6 +402,128 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					&& (Boolean) invoke(wasTileWrittenOnce, xaeroTile)
 					? LocalTileState.READY
 					: LocalTileState.GENERATING;
+		}
+
+		@Override
+		public Optional<MapTile> localTile(String dimension, int chunkX, int chunkZ) throws ReflectiveOperationException {
+			Minecraft minecraft = Minecraft.getInstance();
+			if (!minecraft.isSameThread() || !isSnapshotDimensionCurrent(dimension, null, minecraft)) {
+				return Optional.empty();
+			}
+			Object session = invoke(currentSession, null);
+			if (session == null) throw new IllegalStateException("Xaero WorldMapSession is not initialized");
+			Object processor = invoke(getMapProcessor, session);
+			if (processor == null) throw new IllegalStateException("Xaero MapProcessor is not initialized");
+			if (!isSnapshotDimensionCurrent(dimension, processor, minecraft)) return Optional.empty();
+
+			MapTile[] snapshot = new MapTile[1];
+			Throwable[] failure = new Throwable[1];
+			invoke(waitForLoadingToFinish, processor, (Runnable) () -> {
+				try {
+					snapshot[0] = localTileAfterLoading(dimension, chunkX, chunkZ, processor, minecraft);
+				} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
+					failure[0] = exception;
+				}
+			});
+			if (failure[0] != null) throwCause(failure[0]);
+			return Optional.ofNullable(snapshot[0]);
+		}
+
+		private MapTile localTileAfterLoading(String dimension, int chunkX, int chunkZ, Object processor,
+				Minecraft minecraft) throws ReflectiveOperationException {
+			if (!isSnapshotDimensionCurrent(dimension, processor, minecraft)) return null;
+			int regionX = regionCoordinate(chunkX);
+			int regionZ = regionCoordinate(chunkZ);
+			Object region = invoke(getMapRegion, processor, regionX, regionZ, false);
+			if (region == null) return null;
+
+			Object writerSync = writerThreadPauseSyncField.get(region);
+			synchronized (writerSync) {
+				synchronized (region) {
+					if (!isSnapshotDimensionCurrent(dimension, processor, minecraft)
+							|| invoke(getMapRegion, processor, regionX, regionZ, false) != region
+							|| ((Number) invoke(getRegionLoadState, region)).byteValue() != 2) {
+						return null;
+					}
+					int tileChunkX = tileChunkCoordinate(chunkX);
+					int tileChunkZ = tileChunkCoordinate(chunkZ);
+					Object chunk = invoke(getChunk, region, Math.floorMod(tileChunkX, 8), Math.floorMod(tileChunkZ, 8));
+					if (chunk == null || ((Number) invoke(getChunkLoadState, chunk)).intValue() != 2) return null;
+					Object xaeroTile = invoke(getTile, chunk, Math.floorMod(chunkX, 4), Math.floorMod(chunkZ, 4));
+					if (xaeroTile == null || !(Boolean) invoke(isTileLoaded, xaeroTile)
+							|| !(Boolean) invoke(wasTileWrittenOnce, xaeroTile)) return null;
+
+					LevelChunk clientChunk = minecraft.level.getChunkSource().getChunk(chunkX, chunkZ,
+							ChunkStatus.FULL, false);
+					Field chunkCleanField = (Field) chunkCleanFieldHolder.get(null);
+					if (clientChunk == null || chunkCleanField == null || !chunkCleanField.getBoolean(clientChunk)) {
+						return null;
+					}
+					return snapshotTile(dimension, chunkX, chunkZ, xaeroTile, minecraft);
+				}
+			}
+		}
+
+		private boolean isSnapshotDimensionCurrent(String dimension, Object processor, Minecraft minecraft)
+				throws ReflectiveOperationException {
+			if (minecraft.level == null || !isCurrentDimension(dimension,
+					minecraft.level.dimension().location().toString())) {
+				return false;
+			}
+			return processor == null || isCurrentDimension(dimension, (String) invoke(getCurrentDimension, processor));
+		}
+
+		private MapTile snapshotTile(String dimension, int chunkX, int chunkZ, Object xaeroTile,
+				Minecraft minecraft) throws ReflectiveOperationException {
+
+			int[] baseStateIds = new int[TILE_AREA];
+			int[] baseHeights = new int[TILE_AREA];
+			int[] topHeights = new int[TILE_AREA];
+			String[] biomeKeys = new String[TILE_AREA];
+			byte[] lightAbove = new byte[TILE_AREA];
+			boolean[] glowing = new boolean[TILE_AREA];
+			boolean[] cave = new boolean[TILE_AREA];
+			List<List<MapTile.Overlay>> overlays = new ArrayList<>(TILE_AREA);
+			Registry<Biome> biomeRegistry = minecraft.level.registryAccess().registryOrThrow(Registry.BIOME_REGISTRY);
+			for (int localZ = 0; localZ < TILE_SIDE; localZ++) {
+				for (int localX = 0; localX < TILE_SIDE; localX++) {
+					int index = localZ * TILE_SIDE + localX;
+					Object block = invoke(getMapBlock, xaeroTile, localX, localZ);
+					if (block == null) throw new IllegalStateException("Xaero map block is not loaded yet");
+					BlockState state = (BlockState) invoke(getPixelState, block);
+					Object biome = invoke(getBlockBiome, block);
+					ResourceLocation biomeId = biome == null ? null
+							: (ResourceLocation) invoke(getBiomeIdentifier, biome, biomeRegistry);
+					if (state == null || biomeId == null) {
+						throw new IllegalStateException("Xaero map block registry data is not loaded yet");
+					}
+					baseStateIds[index] = Block.getId(state);
+					baseHeights[index] = ((Number) invoke(getBlockHeight, block)).intValue();
+					topHeights[index] = ((Number) invoke(getBlockTopHeight, block)).intValue();
+					biomeKeys[index] = biomeId.toString();
+					lightAbove[index] = pixelLightField.getByte(block);
+					glowing[index] = pixelGlowingField.getBoolean(block);
+					cave[index] = (Boolean) invoke(isCaveBlock, block);
+					List<?> xaeroOverlays = (List<?>) invoke(getBlockOverlays, block);
+					List<MapTile.Overlay> column = new ArrayList<>(xaeroOverlays == null ? 0 : xaeroOverlays.size());
+					if (xaeroOverlays != null) {
+						for (Object overlay : xaeroOverlays) {
+							BlockState overlayState = (BlockState) invoke(getPixelState, overlay);
+							if (overlayState == null) throw new IllegalStateException("Xaero overlay is not loaded yet");
+							column.add(new MapTile.Overlay(Block.getId(overlayState),
+									((Number) invoke(getOverlayTransparency, overlay)).floatValue(),
+									pixelLightField.getByte(overlay), pixelGlowingField.getBoolean(overlay),
+									((Number) invoke(getOverlayOpacity, overlay)).intValue()));
+						}
+					}
+					overlays.add(List.copyOf(column));
+				}
+			}
+			MapTile unhashed = new MapTile(dimension, chunkX, chunkZ, baseStateIds, baseHeights, topHeights,
+					biomeKeys, lightAbove, glowing, cave, overlays, 0L);
+			long contentHash = MapTileHasher.hashSurface(unhashed);
+			return new MapTile(dimension, chunkX, chunkZ, baseStateIds, baseHeights, topHeights,
+					biomeKeys, lightAbove, glowing, cave, overlays, contentHash);
 		}
 
 		@Override
@@ -492,6 +661,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					}
 					invoke(writeBlock, block, state, baseHeights[index], topHeights[index], biomeKey, lights[index],
 							glowing[index], cave[index]);
+					invoke(setSlopeUnknown, block, true);
 					invoke(setBlock, xaeroTile, localX, localZ, block);
 				}
 			}

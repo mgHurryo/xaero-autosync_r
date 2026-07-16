@@ -64,6 +64,16 @@ final class DirtyChunkRecordTest {
 	}
 
 	@Test
+	void customQuietPeriodControlsClientFallbackDelay() {
+		DirtyChunkRecord record = new DirtyChunkRecord("minecraft:overworld", 0, 0, 10L);
+
+		record.advance(29L, 5, 20);
+		assertEquals(DirtyActivityState.ACTIVE, record.state());
+		record.advance(30L, 5, 20);
+		assertEquals(DirtyActivityState.STABLE, record.state());
+	}
+
+	@Test
 	void restoreReplacesStateTicksAndDirtyColumns() {
 		DirtyChunkRecord record = new DirtyChunkRecord("minecraft:overworld", 0, 0, 1L);
 		record.markColumn(1, 1, 2L);

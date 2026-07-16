@@ -186,7 +186,23 @@ final class DirtyChunkProcessorTest {
 		DirtyChunkProcessor.TickResult result = processor.processTick(2, 2, () -> false);
 
 		assertEquals(0, result.submitted());
-		assertEquals(2, result.deferred());
+		assertEquals(0, result.claimed());
+		assertEquals(0, result.deferred());
+		assertEquals(2, store.totalCount());
+	}
+
+	@Test
+	void availableHeadroomProcessesAcrossMultipleClaimPages() {
+		DirtyChunkStore store = stableStore(100);
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> {
+			store.confirmProcessed(chunk);
+			return true;
+		});
+
+		DirtyChunkProcessor.TickResult result = processor.processTick(100, 100, () -> true);
+
+		assertEquals(100, result.claimed());
+		assertEquals(100, result.submitted());
 	}
 
 	private static DirtyChunkStore stableStore(int count) {

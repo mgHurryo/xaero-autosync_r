@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -104,6 +105,72 @@ public final class MapTileDataStore {
 			XaeroMapsync_r.LOGGER.warn("Map tile cache writer rejected {}", target, exception);
 			return false;
 		}
+	}
+
+	/** Writes an immutable candidate without replacing the published tile body. */
+	public boolean stageAsynchronously(MapTile tile, Consumer<Optional<StagedTile>> completion) {
+		if (tile == null || completion == null) throw new IllegalArgumentException("Tile and completion callback are required");
+		Path target;
+		ExecutorService activeWriter;
+		synchronized (this) {
+			target = path(tile.dimension(), tile.chunkX(), tile.chunkZ());
+			activeWriter = writerFor(tile.dimension(), tile.chunkX(), tile.chunkZ());
+		}
+		if (target == null || activeWriter == null) return false;
+		Path stagedPath = target.resolveSibling(target.getFileName() + ".stage-" + UUID.randomUUID());
+		try {
+			activeWriter.execute(() -> {
+				Optional<StagedTile> result = write(stagedPath, tile)
+						? Optional.of(new StagedTile(tile, target, stagedPath))
+						: Optional.empty();
+				try {
+					completion.accept(result);
+				} catch (RuntimeException exception) {
+					XaeroMapsync_r.LOGGER.warn("Map tile staging callback failed for {}", stagedPath, exception);
+					result.ifPresent(this::discardStaged);
+				}
+			});
+			return true;
+		} catch (RejectedExecutionException exception) {
+			XaeroMapsync_r.LOGGER.warn("Map tile cache writer rejected staging {}", stagedPath, exception);
+			return false;
+		}
+	}
+
+	/** Must be called from the staging writer while the caller holds its generation lock. */
+	public boolean commitStaged(StagedTile staged) {
+		if (staged == null) return false;
+		try {
+			try {
+				Files.move(staged.stagedPath, staged.targetPath, StandardCopyOption.REPLACE_EXISTING,
+						StandardCopyOption.ATOMIC_MOVE);
+			} catch (java.nio.file.AtomicMoveNotSupportedException exception) {
+				Files.move(staged.stagedPath, staged.targetPath, StandardCopyOption.REPLACE_EXISTING);
+			}
+			synchronized (this) {
+				memory.put(key(staged.tile.dimension(), staged.tile.chunkX(), staged.tile.chunkZ()), staged.tile);
+			}
+			return true;
+		} catch (IOException | RuntimeException exception) {
+			XaeroMapsync_r.LOGGER.warn("Failed to commit staged map tile {}", staged.stagedPath, exception);
+			discardStaged(staged);
+			return false;
+		}
+	}
+
+	public void discardStaged(StagedTile staged) {
+		if (staged == null) return;
+		try {
+			Files.deleteIfExists(staged.stagedPath);
+		} catch (IOException exception) {
+			XaeroMapsync_r.LOGGER.warn("Failed to discard staged map tile {}", staged.stagedPath, exception);
+		}
+	}
+
+	public synchronized boolean hasWriteCapacity(String dimension, int chunkX, int chunkZ) {
+		ExecutorService writer = writerFor(dimension, chunkX, chunkZ);
+		return writer instanceof ThreadPoolExecutor
+				&& ((ThreadPoolExecutor) writer).getQueue().remainingCapacity() > 0;
 	}
 
 	/**
@@ -394,5 +461,17 @@ public final class MapTileDataStore {
 
 	private static String key(String dimension, int chunkX, int chunkZ) {
 		return dimension + ":" + ChunkPos.asLong(chunkX, chunkZ);
+	}
+
+	public static final class StagedTile {
+		private final MapTile tile;
+		private final Path targetPath;
+		private final Path stagedPath;
+
+		private StagedTile(MapTile tile, Path targetPath, Path stagedPath) {
+			this.tile = tile;
+			this.targetPath = targetPath;
+			this.stagedPath = stagedPath;
+		}
 	}
 }

@@ -2,6 +2,7 @@ package cn.net.rms.xaeromapsync_r.xaero;
 
 import cn.net.rms.xaeromapsync_r.map.MapTile;
 import java.util.List;
+import java.util.Optional;
 
 public interface XaeroMapAdapter {
 	enum ApplyResult {
@@ -26,6 +27,10 @@ public interface XaeroMapAdapter {
 
 	default LocalTileState localTileState(String dimension, int chunkX, int chunkZ) {
 		return LocalTileState.REMOTE;
+	}
+
+	default Optional<MapTile> localTile(String dimension, int chunkX, int chunkZ) {
+		return Optional.empty();
 	}
 
 	default ApplyResult applyResult(MapTile tile) {

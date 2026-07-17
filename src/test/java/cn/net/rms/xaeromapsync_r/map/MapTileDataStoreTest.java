@@ -27,7 +27,7 @@ public final class MapTileDataStoreTest {
 
 	@Test
 	void v5CacheUsesIndependentDirectory() {
-		assertEquals("tiles-v5", MapTileDataStore.CACHE_DIRECTORY);
+		assertEquals("tiles-v6", MapTileDataStore.CACHE_DIRECTORY);
 	}
 
 	@Test

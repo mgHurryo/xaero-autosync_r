@@ -7,7 +7,6 @@ import cn.net.rms.xaeromapsync_r.map.MapTileDebugRenderer;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexStore;
 import cn.net.rms.xaeromapsync_r.map.MapTileDataStore;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
-import cn.net.rms.xaeromapsync_r.network.SharedMapNetworking;
 import cn.net.rms.xaeromapsync_r.network.CompressionCodec;
 import cn.net.rms.xaeromapsync_r.network.TileDataPayload;
 import cn.net.rms.xaeromapsync_r.server.dirty.DirtyChunkProcessor;
@@ -161,12 +160,11 @@ public final class MapTaskScheduler {
 				server.execute(() -> processor.completeRecalculation(chunk, false));
 				return;
 			}
-			server.execute(() -> publishPersistedTile(server, chunk, tile, surfacePayload));
+			server.execute(() -> publishPersistedTile(chunk, tile));
 		});
 	}
 
-	private void publishPersistedTile(MinecraftServer server, DirtyChunkStore.StableDirtyChunk chunk, MapTile tile,
-			byte[] surfacePayload) {
+	private void publishPersistedTile(DirtyChunkStore.StableDirtyChunk chunk, MapTile tile) {
 		if (!dirtyChunks.isCurrentClaim(chunk)) {
 			processor.completeRecalculation(chunk, true);
 			return;
@@ -191,12 +189,12 @@ public final class MapTaskScheduler {
 			return;
 		}
 		if (previous == null || previous.revision() != entry.revision()) {
-			try {
-				SharedMapNetworking.broadcastTileData(server, tile, entry, surfacePayload);
-			} catch (RuntimeException exception) {
-				XaeroMapsync_r.LOGGER.warn("Failed to broadcast published tile {} {} {}",
-						tile.dimension(), tile.chunkX(), tile.chunkZ(), exception);
-			}
+			cn.net.rms.xaeromapsync_r.map.MapPatchKey patchKey =
+					cn.net.rms.xaeromapsync_r.map.MapPatchKey.fromChunk(tile.dimension(), tile.chunkX(), tile.chunkZ());
+			SharedMapServer.patches().manifest(patchKey).ifPresent(manifest -> XaeroMapsync_r.LOGGER.info(
+					"map_sync event=patch_published patch_id={} epoch={} revision={} patch_hash={} tiles={}",
+					manifest.key().stableId(), manifest.epoch(), manifest.revision(),
+					Long.toUnsignedString(manifest.contentHash()), manifest.tiles().size()));
 		}
 	}
 

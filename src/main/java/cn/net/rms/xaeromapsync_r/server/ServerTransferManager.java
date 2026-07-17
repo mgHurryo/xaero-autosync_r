@@ -3,6 +3,7 @@ package cn.net.rms.xaeromapsync_r.server;
 import cn.net.rms.xaeromapsync_r.network.TransferAckPayload;
 import cn.net.rms.xaeromapsync_r.network.TransferFragmenter;
 import cn.net.rms.xaeromapsync_r.network.TransferPartPayload;
+import cn.net.rms.xaeromapsync_r.network.TransferNackPayload;
 import cn.net.rms.xaeromapsync_r.network.TransferSession;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -52,6 +53,19 @@ public final class ServerTransferManager {
 		if (status == TransferSession.Status.COMPLETED) {
 			playerTransfers.remove(acknowledgement.transferId());
 		}
+	}
+
+	public synchronized void negativeAcknowledge(UUID playerId, TransferNackPayload acknowledgement) {
+		Map<UUID, PendingTransfer> playerTransfers = transfers.get(playerId);
+		if (playerTransfers == null) return;
+		PendingTransfer pending = playerTransfers.get(acknowledgement.transferId());
+		if (pending == null) return;
+		int firstMissing = acknowledgement.missingPartIndexes().stream()
+				.mapToInt(Integer::intValue)
+				.filter(index -> index >= 0 && index < pending.parts.size())
+				.min()
+				.orElse(0);
+		pending.nextPart = Math.min(pending.nextPart, firstMissing);
 	}
 
 	private synchronized void tick(MinecraftServer server) {

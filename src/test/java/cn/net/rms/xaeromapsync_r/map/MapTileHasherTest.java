@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 final class MapTileHasherTest {
 	@Test
 	void modelAndProtocolAdvertiseMapFormatFive() {
-		assertEquals(5, MapTile.FORMAT_VERSION);
+		assertEquals(6, MapTile.FORMAT_VERSION);
 		assertEquals(MapTile.FORMAT_VERSION, SharedMapProtocolDefaults.MAP_FORMAT_VERSION);
 	}
 

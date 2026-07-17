@@ -23,7 +23,7 @@ import net.minecraft.world.level.storage.LevelResource;
 
 public final class MapTileIndexStore {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-	static final String INDEX_FILE_NAME = "map_tile_index-v5.json";
+	static final String INDEX_FILE_NAME = "map_patch_index-v6.json";
 	private final Map<String, MapTileIndexEntry> tiles = new LinkedHashMap<>();
 	private long nextRevision = 1L;
 	private int surfaceSamplerVersion = MapTileDebugRenderer.SURFACE_SAMPLER_VERSION;
@@ -96,7 +96,16 @@ public final class MapTileIndexStore {
 	}
 
 	public synchronized Collection<MapTileIndexEntry> snapshot() {
-		return Collections.unmodifiableCollection(tiles.values());
+		return List.copyOf(tiles.values());
+	}
+
+	public synchronized DimensionSnapshot dimensionSnapshot(String dimension) {
+		List<MapTileIndexEntry> entries = new ArrayList<>();
+		for (MapTileIndexEntry entry : tiles.values()) {
+			if (dimension.equals(entry.dimension())) entries.add(entry);
+		}
+		long epoch = MerkleTreeBuilder.rootHash(MerkleTreeBuilder.build(entries));
+		return new DimensionSnapshot(epoch, List.copyOf(entries));
 	}
 
 	public synchronized boolean requiresSurfaceResample() {
@@ -170,4 +179,6 @@ public final class MapTileIndexStore {
 		private int surfaceSamplerVersion;
 		private MapTileIndexEntry[] tiles;
 	}
+
+	public record DimensionSnapshot(long epoch, List<MapTileIndexEntry> entries) { }
 }

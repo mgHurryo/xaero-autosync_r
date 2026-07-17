@@ -1,0 +1,43 @@
+package cn.net.rms.xaeromapsync_r.network;
+
+import cn.net.rms.xaeromapsync_r.map.MapPatch;
+import cn.net.rms.xaeromapsync_r.map.MapPatchKey;
+import cn.net.rms.xaeromapsync_r.map.MapPatchManifest;
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.network.FriendlyByteBuf;
+
+public final class PatchDataPayload {
+	private final MapPatch patch;
+	private final List<TileDataPayload> tiles;
+
+	public PatchDataPayload(MapPatchManifest manifest, List<TileDataPayload> tiles) {
+		if (tiles == null || tiles.size() != MapPatchKey.TILE_COUNT) throw new IllegalArgumentException("Patch data must contain 16 tiles");
+		this.patch = new MapPatch(manifest, tiles.stream().map(TileDataPayload::tile).toList());
+		for (TileDataPayload tile : tiles) {
+			MapPatchManifest.TileReference reference = manifest.tiles().stream()
+					.filter(item -> item.chunkX() == tile.tile().chunkX() && item.chunkZ() == tile.tile().chunkZ()).findFirst()
+					.orElseThrow(() -> new IllegalArgumentException("Patch tile is missing from the manifest"));
+			if (reference.revision() != tile.revision()) throw new IllegalArgumentException("Patch tile revision mismatch");
+		}
+		this.tiles = List.copyOf(tiles);
+	}
+
+	public static PatchDataPayload read(FriendlyByteBuf buffer) {
+		MapPatchManifest manifest = MapPatchPayloadCodec.readManifest(buffer);
+		int count = buffer.readVarInt();
+		if (count != MapPatchKey.TILE_COUNT) throw new IllegalArgumentException("Invalid patch data tile count: " + count);
+		List<TileDataPayload> tiles = new ArrayList<>(count);
+		for (int index = 0; index < count; index++) tiles.add(TileDataPayload.read(buffer));
+		return new PatchDataPayload(manifest, tiles);
+	}
+
+	public void write(FriendlyByteBuf buffer) {
+		MapPatchPayloadCodec.writeManifest(buffer, patch.manifest());
+		buffer.writeVarInt(tiles.size());
+		for (TileDataPayload tile : tiles) tile.write(buffer);
+	}
+
+	public MapPatch patch() { return patch; }
+	public List<TileDataPayload> tiles() { return tiles; }
+}

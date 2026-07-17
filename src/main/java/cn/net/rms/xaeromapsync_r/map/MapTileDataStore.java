@@ -38,8 +38,8 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.storage.LevelResource;
 
 public final class MapTileDataStore {
-	private static final int MAGIC = 0x584d5335;
-	static final String CACHE_DIRECTORY = "tiles-v5";
+	private static final int MAGIC = 0x584d5336;
+	static final String CACHE_DIRECTORY = "tiles-v6";
 	private static final int TILE_VALUES = 256;
 	private static final int MAX_MEMORY_TILES = 1024;
 	private static final long SYNCHRONOUS_WRITE_TIMEOUT_MILLIS = 2_000L;

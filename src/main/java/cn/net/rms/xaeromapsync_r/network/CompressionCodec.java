@@ -15,7 +15,7 @@ import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 public final class CompressionCodec {
-	private static final int SURFACE_MAGIC = 0x4d545335;
+	private static final int SURFACE_MAGIC = 0x4d545336;
 	private static final int BUFFER_SIZE = 512;
 	private static final int MAX_SURFACE_BYTES = 128 * 1024;
 

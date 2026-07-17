@@ -1,5 +1,6 @@
 package cn.net.rms.xaeromapsync_r.client;
 
+import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 import cn.net.rms.xaeromapsync_r.map.MapPatch;
 import cn.net.rms.xaeromapsync_r.map.MapPatchKey;
 import cn.net.rms.xaeromapsync_r.map.MapTile;
@@ -88,7 +89,15 @@ public final class AtomicPatchCoordinator {
 			if (queue == null || queue.isEmpty()) continue;
 			expireLocalGenerationWaits(queue, nowMillis);
 			Transaction transaction = queue.peekFirst();
-			process(transaction, nowMillis);
+			try {
+				process(transaction, nowMillis);
+			} catch (RuntimeException exception) {
+				MapPatch representative = transaction.patches.get(0);
+				XaeroMapsync_r.LOGGER.error(
+						"map_sync event=patch_process_failed patch_id={} phase={} tiles={}",
+						representative.manifest().key().stableId(), transaction.phase, transaction.tiles.size(), exception);
+				transition(transaction, Phase.FAILED, "runtime-exception");
+			}
 			if (transaction.phase == Phase.APPLIED || transaction.phase == Phase.FAILED) {
 				queue.removeFirst();
 				for (MapPatch patch : transaction.patches) pendingHashes.remove(patch.manifest().key());

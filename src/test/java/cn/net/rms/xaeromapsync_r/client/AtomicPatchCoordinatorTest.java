@@ -335,6 +335,22 @@ class AtomicPatchCoordinatorTest {
 		assertEquals(0, adapter.calls);
 	}
 
+	@Test
+	void adapterRuntimeFailureFailsTransactionWithoutEscapingTick() {
+		FakeAdapter adapter = new FakeAdapter();
+		adapter.localStateFailure = new IllegalStateException("incompatible Xaero reflection");
+		List<AtomicPatchCoordinator.Transition> transitions = new ArrayList<>();
+		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, ignored -> { }, transitions::add);
+		MapPatch patch = patch(new MapPatchKey("minecraft:overworld", 0, 0));
+		coordinator.enqueueVerified(patch);
+
+		assertEquals(1, coordinator.tick(100L, Long.MAX_VALUE));
+		assertEquals(0, coordinator.pendingCount());
+		assertFalse(coordinator.hasPending(patch.manifest().key()));
+		assertEquals(AtomicPatchCoordinator.Phase.FAILED, transitions.get(transitions.size() - 1).next());
+		assertEquals("runtime-exception", transitions.get(transitions.size() - 1).reason());
+	}
+
 	private static MapPatch patch(MapPatchKey key) {
 		return patch(key, key.tileCount());
 	}
@@ -368,9 +384,11 @@ class AtomicPatchCoordinatorTest {
 		private Predicate<MapTile> generatingTiles = ignored -> false;
 		private Predicate<MapTile> readyTiles = ignored -> false;
 		private ApplyResult applyResult = ApplyResult.APPLIED;
+		private RuntimeException localStateFailure;
 		@Override public boolean isAvailable() { return true; }
 		@Override public boolean apply(MapTile tile) { return true; }
 		@Override public LocalTileState localTileState(MapTile tile) {
+			if (localStateFailure != null) throw localStateFailure;
 			return readyTiles.test(tile) ? LocalTileState.READY
 					: generatingTiles.test(tile) ? LocalTileState.GENERATING : LocalTileState.REMOTE;
 		}

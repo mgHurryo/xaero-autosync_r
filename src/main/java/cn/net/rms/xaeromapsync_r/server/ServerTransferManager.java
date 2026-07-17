@@ -104,6 +104,11 @@ public final class ServerTransferManager {
 				TransferSession.Status status = awaitingAcknowledgement
 						? pending.session.checkTimeout(now) : pending.session.status();
 				if (status == TransferSession.Status.RETRIES_EXHAUSTED) {
+					UUID transferId = pending.parts.isEmpty() ? null : pending.parts.get(0).transferId();
+					XaeroMapsync_r.LOGGER.warn(
+							"map_sync event=server_transfer_retries_exhausted player_id={} transfer_id={} parts={} acknowledged_part={} low_priority={} age_ms={}",
+							player.getUUID(), transferId, pending.parts.size(), pending.session.highestAcknowledgedPart(),
+							pending.lowPriority, now - pending.createdAtMillis);
 					pendingIterator.remove();
 					continue;
 				}

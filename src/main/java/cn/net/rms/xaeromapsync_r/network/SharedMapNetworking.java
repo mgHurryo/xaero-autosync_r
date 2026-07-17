@@ -207,8 +207,17 @@ public final class SharedMapNetworking {
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> sendClientHello());
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
 			XaeroMapsync_r.LOGGER.info("Shared map client network disconnected; clearing transfer manager");
-			ClientTransfers.MANAGER.clear();
-			SharedMapClient.disconnect();
+			try {
+				ClientTransfers.MANAGER.clear();
+			} catch (RuntimeException exception) {
+				XaeroMapsync_r.LOGGER.warn("Failed to clear client transfers during disconnect", exception);
+			} finally {
+				try {
+					SharedMapClient.disconnect();
+				} catch (RuntimeException exception) {
+					XaeroMapsync_r.LOGGER.warn("Failed to clear shared map client state during disconnect", exception);
+				}
+			}
 		});
 		ClientPlayNetworking.registerGlobalReceiver(S2C_HELLO, (client, handler, buffer, responseSender) -> {
 			ServerHelloPayload hello = ServerHelloPayload.read(buffer);
@@ -264,8 +273,14 @@ public final class SharedMapNetworking {
 		});
 		ClientPlayNetworking.registerGlobalReceiver(S2C_TRANSFER_PART, (client, handler, buffer, responseSender) -> {
 			TransferPartPayload payload = TransferPartPayload.read(buffer);
-			// Fragment assembly, checksums and decompression are pure byte work and stay off the render thread.
-			ClientTransfers.MANAGER.accept(payload);
+			client.execute(() -> {
+				try {
+					ClientTransfers.MANAGER.accept(payload);
+				} catch (RuntimeException exception) {
+					XaeroMapsync_r.LOGGER.warn("map_sync event=client_transfer_part_rejected transfer_id={} part_index={}",
+							payload.transferId(), payload.partIndex(), exception);
+				}
+			});
 		});
 	}
 
@@ -317,24 +332,33 @@ public final class SharedMapNetworking {
 	}
 
 	@Environment(EnvType.CLIENT)
-	public static boolean sendLocalTileData(MapTile tile) {
+	public static boolean sendLocalTileData(MapTile tile, Consumer<Boolean> completion) {
+		if (completion == null) throw new IllegalArgumentException("Local tile upload completion is required");
 		try {
 			CLIENT_UPLOAD_WORKERS.execute(() -> {
 				try {
 					TileDataPayload payload = TileDataPayload.fromTile(tile, 0L, SharedMapConfig.compression());
 					int payloadBytes = payload.surfacePayload().length;
-					net.minecraft.client.Minecraft.getInstance().execute(() -> {
-						if (payloadBytes + 512 > SharedMapConfig.maxPacketBytes()) {
-							sendLocalTileReady(tile.dimension(), tile.chunkX(), tile.chunkZ(), tile.contentHash());
-							return;
+					executeLocalTileUploadCompletion(() -> {
+						try {
+							if (payloadBytes + 512 > SharedMapConfig.maxPacketBytes()) {
+								sendLocalTileReady(tile.dimension(), tile.chunkX(), tile.chunkZ(), tile.contentHash());
+							} else {
+								FriendlyByteBuf buffer = PacketByteBufs.create();
+								payload.write(buffer);
+								ClientPlayNetworking.send(C2S_LOCAL_TILE_DATA, buffer);
+							}
+							completion.accept(true);
+						} catch (RuntimeException exception) {
+							XaeroMapsync_r.LOGGER.warn("map_sync event=client_tile_send_failed dimension={} chunk_x={} chunk_z={}",
+									tile.dimension(), tile.chunkX(), tile.chunkZ(), exception);
+							completion.accept(false);
 						}
-						FriendlyByteBuf buffer = PacketByteBufs.create();
-						payload.write(buffer);
-						ClientPlayNetworking.send(C2S_LOCAL_TILE_DATA, buffer);
 					});
 				} catch (RuntimeException exception) {
 					XaeroMapsync_r.LOGGER.warn("map_sync event=client_tile_encode_failed dimension={} chunk_x={} chunk_z={}",
 							tile.dimension(), tile.chunkX(), tile.chunkZ(), exception);
+					executeLocalTileUploadCompletion(() -> completion.accept(false));
 				}
 			});
 			return true;
@@ -342,6 +366,15 @@ public final class SharedMapNetworking {
 			XaeroMapsync_r.LOGGER.debug("map_sync event=client_tile_encode_deferred dimension={} chunk_x={} chunk_z={} reason=queue_full",
 					tile.dimension(), tile.chunkX(), tile.chunkZ());
 			return false;
+		}
+	}
+
+	@Environment(EnvType.CLIENT)
+	private static void executeLocalTileUploadCompletion(Runnable completion) {
+		try {
+			net.minecraft.client.Minecraft.getInstance().execute(completion);
+		} catch (RejectedExecutionException ignored) {
+			// Client shutdown makes the per-session upload state unreachable.
 		}
 	}
 
@@ -968,6 +1001,8 @@ public final class SharedMapNetworking {
 								CompressionCodec.MapTileSurfaceData.fromTile(tile), compression);
 						prepared.add(new PreparedTile(tileRequest, tile, surface));
 					} catch (RuntimeException exception) {
+						XaeroMapsync_r.LOGGER.warn("Failed to encode requested batch tile dimension={} chunk={} {}",
+								tileRequest.dimension(), tileRequest.chunkX(), tileRequest.chunkZ(), exception);
 						prepared.add(new PreparedTile(tileRequest, tile, null));
 					}
 				}
@@ -1235,8 +1270,10 @@ public final class SharedMapNetworking {
 		RegionKey region = null;
 		try {
 			region = SharedMapServer.permissions().regionOf(waypoint);
-		} catch (RuntimeException ignored) {
+		} catch (RuntimeException exception) {
 			// Invalid coordinates are already represented by the failed audit detail.
+			XaeroMapsync_r.LOGGER.warn("Failed to resolve waypoint audit region action={} waypoint_id={}",
+					action, waypoint == null ? null : waypoint.id(), exception);
 		}
 		SharedMapServer.access().audit().record(actor, action, success, region, waypoint.id(), detail);
 	}

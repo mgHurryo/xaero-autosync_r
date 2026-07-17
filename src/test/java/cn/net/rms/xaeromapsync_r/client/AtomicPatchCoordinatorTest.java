@@ -294,19 +294,20 @@ class AtomicPatchCoordinatorTest {
 	}
 
 	@Test
-	void smallHolePatchesWaitUntilLargeTransfersDrainThenRunOneAtATime() {
+	void smallHolePatchesWaitUntilLargeTransfersDrainThenUseEightRequestWindow() {
 		assertTrue(AtomicMapSyncClient.canStartPatchRequest(8, 7, true, false));
 		assertFalse(AtomicMapSyncClient.canStartPatchRequest(8, 8, false, true));
 		assertFalse(AtomicMapSyncClient.canStartPatchRequest(2, 0, false, false));
 		assertFalse(AtomicMapSyncClient.canStartPatchRequest(2, 0, true, true));
-		assertFalse(AtomicMapSyncClient.canStartPatchRequest(1, 1, false, true));
+		assertTrue(AtomicMapSyncClient.canStartPatchRequest(1, 1, false, true));
+		assertFalse(AtomicMapSyncClient.canStartPatchRequest(2, 8, false, true));
 		assertTrue(AtomicMapSyncClient.canStartPatchRequest(2, 0, false, true));
 	}
 
 	@Test
-	void smallHoleCommitsAreBatchedByCountOrOneSecondWindow() {
-		assertFalse(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 1_999L));
-		assertTrue(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 2_000L));
+	void smallHoleCommitsAreBatchedByCountOrTwoSecondWindow() {
+		assertFalse(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 2_999L));
+		assertTrue(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 3_000L));
 		assertTrue(AtomicMapSyncClient.shouldFlushSmallWave(128, 1_999L, 2_000L));
 		assertFalse(AtomicMapSyncClient.shouldFlushSmallWave(0, -1L, 10_000L));
 	}
@@ -333,6 +334,22 @@ class AtomicPatchCoordinatorTest {
 		coordinator.tick(1_300L, Long.MAX_VALUE);
 		assertEquals(4L, coordinator.statistics(1_300L).localGenerationRechecks());
 		assertEquals(0, adapter.calls);
+	}
+
+	@Test
+	void adapterRuntimeFailureFailsTransactionWithoutEscapingTick() {
+		FakeAdapter adapter = new FakeAdapter();
+		adapter.localStateFailure = new IllegalStateException("incompatible Xaero reflection");
+		List<AtomicPatchCoordinator.Transition> transitions = new ArrayList<>();
+		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, ignored -> { }, transitions::add);
+		MapPatch patch = patch(new MapPatchKey("minecraft:overworld", 0, 0));
+		coordinator.enqueueVerified(patch);
+
+		assertEquals(1, coordinator.tick(100L, Long.MAX_VALUE));
+		assertEquals(0, coordinator.pendingCount());
+		assertFalse(coordinator.hasPending(patch.manifest().key()));
+		assertEquals(AtomicPatchCoordinator.Phase.FAILED, transitions.get(transitions.size() - 1).next());
+		assertEquals("runtime-exception", transitions.get(transitions.size() - 1).reason());
 	}
 
 	private static MapPatch patch(MapPatchKey key) {
@@ -368,9 +385,11 @@ class AtomicPatchCoordinatorTest {
 		private Predicate<MapTile> generatingTiles = ignored -> false;
 		private Predicate<MapTile> readyTiles = ignored -> false;
 		private ApplyResult applyResult = ApplyResult.APPLIED;
+		private RuntimeException localStateFailure;
 		@Override public boolean isAvailable() { return true; }
 		@Override public boolean apply(MapTile tile) { return true; }
 		@Override public LocalTileState localTileState(MapTile tile) {
+			if (localStateFailure != null) throw localStateFailure;
 			return readyTiles.test(tile) ? LocalTileState.READY
 					: generatingTiles.test(tile) ? LocalTileState.GENERATING : LocalTileState.REMOTE;
 		}

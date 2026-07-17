@@ -4,7 +4,9 @@ import cn.net.rms.xaeromapsync_r.map.MapPatch;
 import cn.net.rms.xaeromapsync_r.map.MapPatchKey;
 import cn.net.rms.xaeromapsync_r.map.MapPatchManifest;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import net.minecraft.network.FriendlyByteBuf;
 
 public final class PatchDataPayload {
@@ -15,10 +17,14 @@ public final class PatchDataPayload {
 		if (tiles == null || tiles.size() != manifest.tiles().size())
 			throw new IllegalArgumentException("Patch data must match the manifest tile count");
 		this.patch = new MapPatch(manifest, tiles.stream().map(TileDataPayload::tile).toList());
+		Map<Long, MapPatchManifest.TileReference> references = new HashMap<>(manifest.tiles().size() * 2);
+		for (MapPatchManifest.TileReference reference : manifest.tiles()) {
+			MapPatchManifest.TileReference previous = references.put(coordinateKey(reference.chunkX(), reference.chunkZ()), reference);
+			if (previous != null) throw new IllegalArgumentException("Patch manifest contains duplicate tile coordinates");
+		}
 		for (TileDataPayload tile : tiles) {
-			MapPatchManifest.TileReference reference = manifest.tiles().stream()
-					.filter(item -> item.chunkX() == tile.tile().chunkX() && item.chunkZ() == tile.tile().chunkZ()).findFirst()
-					.orElseThrow(() -> new IllegalArgumentException("Patch tile is missing from the manifest"));
+			MapPatchManifest.TileReference reference = references.get(coordinateKey(tile.tile().chunkX(), tile.tile().chunkZ()));
+			if (reference == null) throw new IllegalArgumentException("Patch tile is missing from the manifest");
 			if (reference.revision() != tile.revision()) throw new IllegalArgumentException("Patch tile revision mismatch");
 		}
 		this.tiles = List.copyOf(tiles);
@@ -42,4 +48,8 @@ public final class PatchDataPayload {
 
 	public MapPatch patch() { return patch; }
 	public List<TileDataPayload> tiles() { return tiles; }
+
+	private static long coordinateKey(int chunkX, int chunkZ) {
+		return (long) chunkX << 32 | chunkZ & 0xffffffffL;
+	}
 }

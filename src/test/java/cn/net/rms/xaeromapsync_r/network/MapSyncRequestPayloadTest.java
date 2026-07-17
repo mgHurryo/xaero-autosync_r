@@ -12,8 +12,8 @@ import org.junit.jupiter.api.Test;
 
 final class MapSyncRequestPayloadTest {
 	@Test
-	void adaptiveSquarePatchProtocolUsesVersionTen() {
-		assertEquals(10, SharedMapProtocolDefaults.PROTOCOL_VERSION);
+	void adaptiveSquarePatchProtocolUsesVersionEleven() {
+		assertEquals(11, SharedMapProtocolDefaults.PROTOCOL_VERSION);
 	}
 
 	@Test

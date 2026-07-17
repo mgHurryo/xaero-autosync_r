@@ -19,6 +19,19 @@ final class ClientMapTileCacheTest {
 	@TempDir Path tempDirectory;
 
 	@Test
+	void metadataCacheEvictsLeastRecentlyUsedEntryAtCapacity() {
+		java.util.Map<Integer, Integer> cache = ClientMapTileCache.boundedAccessMap(2);
+		cache.put(1, 1);
+		cache.put(2, 2);
+		assertEquals(1, cache.get(1));
+		cache.put(3, 3);
+
+		assertTrue(cache.containsKey(1));
+		assertFalse(cache.containsKey(2));
+		assertTrue(cache.containsKey(3));
+	}
+
+	@Test
 	void sessionResetInvalidatesAppliedRevisions() {
 		ClientMapTileCache cache = new ClientMapTileCache();
 		cache.markApplied(tile("minecraft:overworld", -1, 2), 7L);

@@ -6,7 +6,7 @@
 
 ## 修改内容
 
-- 协议 v10、地图格式 v6、应用版本 `3.0.0-alpha.5`。
+- 协议 v11、地图格式 v6、应用版本 `3.0.0-alpha.6`。
 - 自动地图来源改为客户端 Xaero tile；服务端地形采样默认关闭，避免出生点、历史 dirty 队列或加载状态生成玩家从未访问过的地图。
 - 服务端 2 秒聚合更新，在每个 Xaero 32x32 region 内按最大正方形优先切成边长 1–32 的完整 patch，并保留视口/移动方向优先级。
 - 恢复受限的客户端 tile 上传，并渐进合并 A/B 已有 Xaero region；远处数据只填空，不覆盖服务端已有 body。
@@ -14,7 +14,7 @@
 - 实时 Xaero tile 增加 2 秒 hash 稳定窗口；本地生成超时后仅提交非加载区的远端子集，将加载区交还本机 Xaero 并完成 patch，避免永久挂起与重复下载整包。
 - tile 数据仓库增加按内容 hash 的 16,384 项有界版本历史，保证 catalog 发布后即使当前 body 被替换，旧 epoch 仍可完整组包。
 - CRC32 分片、ACK/NACK、超时、有限重传、最多 8 路主包请求以及有界压缩/解码工作线程。
-- 主波次全部校验后按 Xaero region 统一释放；1x1/2x2 补洞包只在带宽低于 50% 时逐个传输，并按 1 秒/128 包窗口合并同 region 提交。
+- 主波次全部校验后按 Xaero region 统一释放；1x1/2x2 补洞包由服务端低水位队列逐个传输，客户端保持 8 个请求窗口并按 2 秒/128 包合并同 region 提交。
 - 当前强/弱加载 chunk 始终保留本机 Xaero 结果，曾访问但当前未加载的 chunk 允许云端刷新。
 - 每 Xaero 32x32 region 单事务提交，禁止部分主波次落地。
 - `trace_id`、阶段日志、10 秒汇总、玩家限时 trace、kill switch 与 shadow mode。
@@ -69,4 +69,4 @@ Shadow Mode 后灰度发布。
 
 Refs: NO-TICKET
 
-BREAKING CHANGE: protocol v10 is required for adaptive square waves; map format remains v6 and does not require a world, map cache or waypoint reset.
+BREAKING CHANGE: protocol v11 is required for adaptive square waves and peer-assisted gap recovery; map format remains v6 and does not require a world, map cache or waypoint reset.

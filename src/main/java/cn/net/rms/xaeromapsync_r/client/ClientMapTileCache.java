@@ -19,9 +19,10 @@ import java.util.concurrent.TimeUnit;
 import net.minecraft.world.level.ChunkPos;
 
 public final class ClientMapTileCache {
-	private final Map<String, Long> appliedRevisions = new LinkedHashMap<>();
-	private final Map<String, Long> cachedHashes = new LinkedHashMap<>();
-	private final Map<String, Long> cachedRevisions = new LinkedHashMap<>();
+	private static final int MAX_TRACKED_TILE_METADATA = 65_536;
+	private final Map<String, Long> appliedRevisions = boundedAccessMap(MAX_TRACKED_TILE_METADATA);
+	private final Map<String, Long> cachedHashes = boundedAccessMap(MAX_TRACKED_TILE_METADATA);
+	private final Map<String, Long> cachedRevisions = boundedAccessMap(MAX_TRACKED_TILE_METADATA);
 	private final Map<String, PendingCacheWrite> pendingWrites = new LinkedHashMap<>();
 	private final Set<String> writesInFlight = new HashSet<>();
 	private final MapTileDataStore tileBodies = new MapTileDataStore();
@@ -75,7 +76,9 @@ public final class ClientMapTileCache {
 		}
 		PendingCacheWrite pending = new PendingCacheWrite(tile, revision, 0, 0L);
 		synchronized (this) { pendingWrites.put(key, pending); }
-		drainPendingWritesSafely();
+		// The 25 ms background pump batches scheduling. Draining here once per
+		// tile turns a large applied wave into repeated scans of the same pending
+		// map on the render thread.
 	}
 
 	/** Returns true only when every tile in a possibly reshaped patch is already applied. */
@@ -206,6 +209,15 @@ public final class ClientMapTileCache {
 	}
 
 	private record PendingCacheWrite(MapTile tile, long revision, int attempts, long retryNotBeforeMillis) {}
+
+	static <K, V> Map<K, V> boundedAccessMap(int maximumEntries) {
+		if (maximumEntries <= 0) throw new IllegalArgumentException("Maximum cache entries must be positive");
+		return new LinkedHashMap<>(128, 0.75F, true) {
+			@Override protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+				return size() > maximumEntries;
+			}
+		};
+	}
 
 	private static String key(String dimension, int chunkX, int chunkZ) {
 		return dimension + ":" + ChunkPos.asLong(chunkX, chunkZ);

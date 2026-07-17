@@ -44,6 +44,7 @@ public final class SharedMapServer {
 	private static final MapTileDataStore TILE_DATA = new MapTileDataStore();
 	private static final MapPatchCatalog PATCHES = new MapPatchCatalog(MAP_TILES, TILE_DATA);
 	private static final NetworkBudgetTracker NETWORK_BUDGET = new NetworkBudgetTracker();
+	private static final GapRecoveryBroker GAP_RECOVERY = new GapRecoveryBroker();
 	private static final SharedMapAccessManager ACCESS = new SharedMapAccessManager();
 	private static final SharedMapPermissionPolicy PERMISSIONS = new SharedMapPermissionPolicy(ACCESS.regions());
 	private static final RegionActivityThresholds ACTIVITY_THRESHOLDS = new RegionActivityThresholds(
@@ -83,6 +84,8 @@ public final class SharedMapServer {
 		TRANSFERS.register();
 		ServerTickEvents.END_SERVER_TICK.register(server -> {
 			flushRegionActivity();
+			cn.net.rms.xaeromapsync_r.network.SharedMapNetworking.expireGapRecoveries(server,
+					System.currentTimeMillis());
 			if (++teamVisibilityTicks >= 20) {
 				teamVisibilityTicks = 0;
 				refreshChangedTeamVisibility(server);
@@ -125,6 +128,7 @@ public final class SharedMapServer {
 					acceptedClientCount(), WAYPOINTS.activeCount(), EXPLORED_CHUNKS.totalCount(),
 					DIRTY_CHUNKS.totalCount(), MAP_TILES.totalCount());
 			TRANSFERS.clear();
+			GAP_RECOVERY.clear();
 			TILE_DATA.stop();
 			WAYPOINTS.save(server);
 			EXPLORED_CHUNKS.save(server);
@@ -139,6 +143,7 @@ public final class SharedMapServer {
 			XaeroMapsync_r.LOGGER.info("Shared map client disconnected: {} acceptedBeforeDisconnect={}",
 					handler.player.getGameProfile().getName(), hasAcceptedClient(handler.player.getUUID()));
 			TRANSFERS.cancelPlayer(handler.player.getUUID());
+			GAP_RECOVERY.removeRequester(handler.player.getUUID());
 			CLIENTS.remove(handler.player.getUUID());
 			CLIENT_TEAMS.remove(handler.player.getUUID());
 			TRACE_UNTIL_MILLIS.remove(handler.player.getUUID());
@@ -277,6 +282,8 @@ public final class SharedMapServer {
 	public static NetworkBudgetTracker networkBudget() {
 		return NETWORK_BUDGET;
 	}
+
+	public static GapRecoveryBroker gapRecovery() { return GAP_RECOVERY; }
 
 	public static MapTaskScheduler mapTasks() {
 		return MAP_TASKS;

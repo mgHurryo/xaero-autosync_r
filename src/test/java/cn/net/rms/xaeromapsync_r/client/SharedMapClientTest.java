@@ -84,6 +84,21 @@ final class SharedMapClientTest {
 	}
 
 	@Test
+	void uploadHashIsCommittedOnlyAfterMatchingSuccessfulSend() {
+		assertTrue(SharedMapClient.shouldCommitLocalTileUpload(12L, 12L, true));
+		assertFalse(SharedMapClient.shouldCommitLocalTileUpload(12L, 12L, false));
+		assertFalse(SharedMapClient.shouldCommitLocalTileUpload(13L, 12L, true));
+		assertFalse(SharedMapClient.shouldCommitLocalTileUpload(null, 12L, true));
+	}
+
+	@Test
+	void staleCacheCompletionCannotDecrementNewGenerationOrGoNegative() {
+		assertEquals(4, SharedMapClient.cacheLookupCountAfterCompletion(4, 7L, 8L));
+		assertEquals(3, SharedMapClient.cacheLookupCountAfterCompletion(4, 8L, 8L));
+		assertEquals(0, SharedMapClient.cacheLookupCountAfterCompletion(0, 8L, 8L));
+	}
+
+	@Test
 	void tileTargetAdmissionStopsAtTheConfiguredHardLimit() {
 		assertTrue(SharedMapClient.canTrackTileTarget(8_191, 8_192));
 		assertFalse(SharedMapClient.canTrackTileTarget(8_192, 8_192));

@@ -70,6 +70,12 @@ final class SharedMapClientTest {
 	}
 
 	@Test
+	void localTileUploadsFollowClientRenderDistanceInsteadOfHistoricalMapRadius() {
+		assertEquals(3, SharedMapClient.localTileUploadRadius(2));
+		assertEquals(13, SharedMapClient.localTileUploadRadius(12));
+	}
+
+	@Test
 	void newerPushSupersedesDeferredTileButOlderPayloadDoesNot() {
 		assertTrue(SharedMapClient.shouldReplacePendingRevision(10L, 11L));
 		assertFalse(SharedMapClient.shouldReplacePendingRevision(11L, 11L));

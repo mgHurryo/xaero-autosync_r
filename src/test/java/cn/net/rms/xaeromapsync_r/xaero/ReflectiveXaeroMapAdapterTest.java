@@ -11,6 +11,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -67,6 +69,7 @@ final class ReflectiveXaeroMapAdapterTest {
 		int[] baseStateIds = new int[256];
 		baseStateIds[17] = 1;
 		assertTrue(ReflectiveXaeroMapAdapter.isUsableLocalSnapshot(tile(256, baseStateIds)));
+		assertTrue(ReflectiveXaeroMapAdapter.isUsableLocalSnapshot(overlayOnlyTile(256)));
 	}
 
 	@Test
@@ -274,6 +277,15 @@ final class ReflectiveXaeroMapAdapterTest {
 
 	private static MapTile allAirTile(int size) {
 		return new MapTile("minecraft:overworld", -1, -5, new int[size], new int[size], new int[size], new int[size], 1L);
+	}
+
+	private static MapTile overlayOnlyTile(int size) {
+		List<List<MapTile.Overlay>> overlays = new ArrayList<>(size);
+		for (int index = 0; index < size; index++) {
+			overlays.add(index == 0 ? List.of(new MapTile.Overlay(9, 0.66F, (byte) 15, false, 1)) : List.of());
+		}
+		return new MapTile("minecraft:overworld", -1, -5, new int[size], new int[size], new int[size],
+				new int[size], new byte[size], new boolean[size], new boolean[size], overlays, 1L);
 	}
 
 	private static MapTile tile(int size, int[] baseStateIds) {

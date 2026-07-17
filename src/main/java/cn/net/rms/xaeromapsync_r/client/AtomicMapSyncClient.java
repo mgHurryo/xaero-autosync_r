@@ -19,13 +19,14 @@ import java.util.Map;
 import java.util.Set;
 import net.minecraft.client.Minecraft;
 
-/** Client entry point for protocol-v10 adaptive square patch synchronization. */
+/** Client entry point for protocol-v11 adaptive square patch synchronization. */
 public final class AtomicMapSyncClient {
 	private static final long TICK_BUDGET_NANOS = 4_000_000L;
 	private static final int MAX_PATCH_REQUESTS_IN_FLIGHT = 8;
 	private static final int SMALL_PATCH_MAX_SIDE = 2;
 	private static final int SMALL_PATCH_COMMIT_BATCH = 128;
-	private static final long SMALL_PATCH_COMMIT_WINDOW_MILLIS = 1_000L;
+	private static final long SMALL_PATCH_COMMIT_WINDOW_MILLIS = 2_000L;
+	private static final long GAP_RECOVERY_POLL_INTERVAL_MILLIS = 250L;
 	private static final int MANIFEST_POLL_TICKS = 100;
 	private static final int SUMMARY_TICKS = 200;
 	private static final long PATCH_REQUEST_TIMEOUT_MILLIS = 15_000L;
@@ -34,6 +35,7 @@ public final class AtomicMapSyncClient {
 	private static final int MAX_APPLIED_PATCH_HASHES = 16_384;
 	private static final int MAX_RETIRED_RESPONSES = 64;
 	private final ClientMapTileCache cache = new ClientMapTileCache();
+	private final MapGapDetector gapDetector = new MapGapDetector();
 	private final XaeroMapAdapter adapter;
 	private final AtomicPatchCoordinator coordinator;
 	private final ArrayDeque<MapPatchManifest> requestQueue = new ArrayDeque<>();
@@ -48,6 +50,7 @@ public final class AtomicMapSyncClient {
 	private final Map<MapPatchKey, MapPatch> verifiedWavePatches = new LinkedHashMap<>();
 	private final Map<MapPatchKey, MapPatch> verifiedSmallPatches = new LinkedHashMap<>();
 	private long smallPatchWindowStartedMillis = -1L;
+	private long nextGapRecoveryPollMillis;
 	private boolean connected;
 	private long syncId;
 	private long epoch;
@@ -92,6 +95,16 @@ public final class AtomicMapSyncClient {
 			long nowMillis = System.currentTimeMillis();
 			expirePatchRequests(nowMillis);
 			pumpPatchRequests();
+			if (shouldPollGapRecovery(nowMillis, nextGapRecoveryPollMillis)) {
+				nextGapRecoveryPollMillis = nowMillis + GAP_RECOVERY_POLL_INTERVAL_MILLIS;
+				List<cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry> recovery = gapDetector.poll(nowMillis, 2,
+						cache::appliedRevision);
+				if (!recovery.isEmpty()) {
+					SharedMapNetworking.requestGapRecovery(recovery);
+					XaeroMapsync_r.LOGGER.info("map_sync event=gap_recovery_requested tiles={} delay_ms={}",
+							recovery.size(), MapGapDetector.DETECTION_DELAY_MILLIS);
+				}
+			}
 			if (shouldFlushSmallWave(verifiedSmallPatches.size(), smallPatchWindowStartedMillis, nowMillis))
 				flushVerifiedSmallWave();
 			if (shouldPollManifest(++ticks, requestQueue.size(), inFlight.size(),
@@ -165,6 +178,7 @@ public final class AtomicMapSyncClient {
 			pumpPatchRequests();
 			return;
 		}
+		gapDetector.record(patch.manifest(), System.currentTimeMillis());
 		if (!currentResponse) {
 			// A manifest restart does not invalidate an already verified immutable
 			// epoch response. Commit it instead of throwing away useful network work.
@@ -312,6 +326,7 @@ public final class AtomicMapSyncClient {
 				Math.max(0L, System.currentTimeMillis() - smallPatchWindowStartedMillis));
 		verifiedSmallPatches.clear();
 		smallPatchWindowStartedMillis = -1L;
+		nextGapRecoveryPollMillis = 0L;
 	}
 
 	private void expirePatchRequests(long nowMillis) {
@@ -447,6 +462,7 @@ public final class AtomicMapSyncClient {
 		verifiedSmallPatches.clear();
 		smallPatchWindowStartedMillis = -1L;
 		cache.clearSession();
+		gapDetector.clear();
 		epoch = 0L;
 		manifestCursor = 0;
 		manifestTotal = 0;
@@ -476,6 +492,9 @@ public final class AtomicMapSyncClient {
 		return ticks % MANIFEST_POLL_TICKS == 0 && queuedRequests == 0 && requestsInFlight == 0
 				&& verifiedWavePatches == 0 && pendingCommits == 0;
 	}
+	static boolean shouldPollGapRecovery(long nowMillis, long nextPollMillis) {
+		return nowMillis >= nextPollMillis;
+	}
 	static boolean shouldDownloadManifest(Long appliedHash, long contentHash, boolean commitPending,
 			boolean requestInFlight, boolean requestQueued) {
 		return (appliedHash == null || appliedHash.longValue() != contentHash)
@@ -487,7 +506,7 @@ public final class AtomicMapSyncClient {
 	static boolean canStartPatchRequest(int sideLength, int inFlight, boolean largePatchQueued,
 			boolean manifestComplete) {
 		if (sideLength > SMALL_PATCH_MAX_SIDE) return inFlight < MAX_PATCH_REQUESTS_IN_FLIGHT;
-		return manifestComplete && !largePatchQueued && inFlight == 0;
+		return manifestComplete && !largePatchQueued && inFlight < MAX_PATCH_REQUESTS_IN_FLIGHT;
 	}
 	static boolean shouldFlushSmallWave(int count, long startedMillis, long nowMillis) {
 		return count >= SMALL_PATCH_COMMIT_BATCH

@@ -294,21 +294,29 @@ class AtomicPatchCoordinatorTest {
 	}
 
 	@Test
-	void smallHolePatchesWaitUntilLargeTransfersDrainThenRunOneAtATime() {
+	void smallHolePatchesWaitUntilLargeTransfersDrainThenUseEightRequestWindow() {
 		assertTrue(AtomicMapSyncClient.canStartPatchRequest(8, 7, true, false));
 		assertFalse(AtomicMapSyncClient.canStartPatchRequest(8, 8, false, true));
 		assertFalse(AtomicMapSyncClient.canStartPatchRequest(2, 0, false, false));
 		assertFalse(AtomicMapSyncClient.canStartPatchRequest(2, 0, true, true));
-		assertFalse(AtomicMapSyncClient.canStartPatchRequest(1, 1, false, true));
+		assertTrue(AtomicMapSyncClient.canStartPatchRequest(1, 1, false, true));
+		assertFalse(AtomicMapSyncClient.canStartPatchRequest(2, 8, false, true));
 		assertTrue(AtomicMapSyncClient.canStartPatchRequest(2, 0, false, true));
 	}
 
 	@Test
-	void smallHoleCommitsAreBatchedByCountOrOneSecondWindow() {
-		assertFalse(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 1_999L));
-		assertTrue(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 2_000L));
+	void smallHoleCommitsAreBatchedByCountOrTwoSecondWindow() {
+		assertFalse(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 2_999L));
+		assertTrue(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 3_000L));
 		assertTrue(AtomicMapSyncClient.shouldFlushSmallWave(128, 1_999L, 2_000L));
 		assertFalse(AtomicMapSyncClient.shouldFlushSmallWave(0, -1L, 10_000L));
+	}
+
+	@Test
+	void gapRecoveryPollingMatchesTheServerFourBatchPerSecondLimit() {
+		assertTrue(AtomicMapSyncClient.shouldPollGapRecovery(1_000L, 1_000L));
+		assertFalse(AtomicMapSyncClient.shouldPollGapRecovery(1_249L, 1_250L));
+		assertTrue(AtomicMapSyncClient.shouldPollGapRecovery(1_250L, 1_250L));
 	}
 
 	@Test

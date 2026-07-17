@@ -1,4 +1,4 @@
-# refactor(map-sync)!: replace tile streaming with atomic region patches
+# feat(map-sync)!: recover map gaps from online Xaero clients
 
 ## 修改目标
 
@@ -6,7 +6,7 @@
 
 ## 修改内容
 
-- 协议 v10、地图格式 v6、应用版本 `3.0.0-alpha.5`。
+- 协议 v11、地图格式 v6、应用版本 `3.0.0-alpha.6`。
 - 自动地图来源改为客户端 Xaero tile；服务端地形采样默认关闭，避免出生点、历史 dirty 队列或加载状态生成玩家从未访问过的地图。
 - 服务端 2 秒聚合更新，在每个 Xaero 32x32 region 内按最大正方形优先切成边长 1–32 的完整 patch，并保留视口/移动方向优先级。
 - 恢复受限的客户端 tile 上传，并渐进合并 A/B 已有 Xaero region；远处数据只填空，不覆盖服务端已有 body。
@@ -14,7 +14,8 @@
 - 实时 Xaero tile 增加 2 秒 hash 稳定窗口；本地生成超时后仅提交非加载区的远端子集，将加载区交还本机 Xaero 并完成 patch，避免永久挂起与重复下载整包。
 - tile 数据仓库增加按内容 hash 的 16,384 项有界版本历史，保证 catalog 发布后即使当前 body 被替换，旧 epoch 仍可完整组包。
 - CRC32 分片、ACK/NACK、超时、有限重传、最多 8 路主包请求以及有界压缩/解码工作线程。
-- 主波次全部校验后按 Xaero region 统一释放；1x1/2x2 补洞包只在带宽低于 50% 时逐个传输，并按 1 秒/128 包窗口合并同 region 提交。
+- 主波次全部校验后按 Xaero region 统一释放；1x1/2x2 补洞包由服务端低水位队列逐个传输，客户端保持 8 个请求窗口并按 2 秒/128 包合并同 region 提交。
+- 缺口的实际相邻 tile 达到目标 revision 且稳定 30 秒后才请求恢复；服务端先查询合并存储，再用 750ms 有界窗口向同维度在线客户端探测。请求限制为每客户端 4 批/秒、全局 32 批/秒和每批最多 8 个 peer，且不会启动服务端地形渲染。
 - 当前强/弱加载 chunk 始终保留本机 Xaero 结果，曾访问但当前未加载的 chunk 允许云端刷新。
 - 每 Xaero 32x32 region 单事务提交，禁止部分主波次落地。
 - `trace_id`、阶段日志、10 秒汇总、玩家限时 trace、kill switch 与 shadow mode。
@@ -47,11 +48,11 @@ High
 
 基线日志：客户端 A/B 分别出现 94/34 次注入延迟，85/26 次 region refresh pending。
 
-修改后：单元测试覆盖 1–32 正方形分割、2 秒聚合、波次屏障、低水位补洞、协议编解码、当前加载区块所有权、归档 region 反射契约和 fill-only 合并；实时黑块与长时 P95 仍需 staging 验证。
+修改后：277 项测试通过，覆盖 1–32 正方形分割、2 秒聚合、波次屏障、低水位补洞、协议编解码、当前加载区块所有权、归档 region 反射契约、fill-only 合并、缺口稳定窗口和在线同伴缺口恢复限流。单客户端实测 2,586 个 patch 全部应用，提交队列归零，稳态 P95 为 0.071ms；A/B 双客户端完成 v11 握手并触发同维度 peer probe。高速移动和 staging 长时测试仍待执行。
 
 ## 性能和成本
 
-客户端同步 tick 硬预算 4ms；主 patch 请求并发上限 8；小型补洞单路；服务端低优先级传输最多使用玩家与全局预算的低水位区间；manifest 页面上限 128。无模型或 Token 成本。
+客户端同步 tick 硬预算 4ms；主 patch 和小型补洞请求窗口上限均为 8；服务端低优先级传输逐包使用玩家与全局预算的低水位区间；manifest 页面上限 128。无模型或 Token 成本。
 
 ## 安全影响
 
@@ -69,4 +70,4 @@ Shadow Mode 后灰度发布。
 
 Refs: NO-TICKET
 
-BREAKING CHANGE: protocol v10 is required for adaptive square waves; map format remains v6 and does not require a world, map cache or waypoint reset.
+BREAKING CHANGE: protocol v11 is required for adaptive square waves and peer-assisted gap recovery; map format remains v6 and does not require a world, map cache or waypoint reset.

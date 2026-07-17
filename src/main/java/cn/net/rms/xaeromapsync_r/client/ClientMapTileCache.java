@@ -76,7 +76,9 @@ public final class ClientMapTileCache {
 		}
 		PendingCacheWrite pending = new PendingCacheWrite(tile, revision, 0, 0L);
 		synchronized (this) { pendingWrites.put(key, pending); }
-		drainPendingWritesSafely();
+		// The 25 ms background pump batches scheduling. Draining here once per
+		// tile turns a large applied wave into repeated scans of the same pending
+		// map on the render thread.
 	}
 
 	/** Returns true only when every tile in a possibly reshaped patch is already applied. */

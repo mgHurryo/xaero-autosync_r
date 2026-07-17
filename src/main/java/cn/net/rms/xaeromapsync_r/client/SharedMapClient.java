@@ -63,6 +63,7 @@ public final class SharedMapClient {
 	private static final Map<String, Long> LOCAL_TILE_PENDING_HASHES = boundedAccessMap(MAX_LOCAL_UPLOAD_HASH_ENTRIES);
 	private static final Map<String, Long> LOCAL_TILE_PENDING_SINCE = boundedAccessMap(MAX_LOCAL_UPLOAD_HASH_ENTRIES);
 	private static final Map<String, Long> LOCAL_TILE_UPLOADS_IN_FLIGHT = boundedAccessMap(MAX_LOCAL_UPLOAD_HASH_ENTRIES);
+	private static final Set<String> RECOVERY_TILE_UPLOADS_IN_FLIGHT = new HashSet<>();
 	private static final ArrayDeque<XaeroMapAdapter.LocalRegion> LOCAL_REGION_SCAN_QUEUE = new ArrayDeque<>();
 	private static final ArrayDeque<PendingTileApply> TILE_APPLY_QUEUE = new ArrayDeque<>();
 	private static final Set<String> PENDING_TILE_APPLIES = new HashSet<>();
@@ -312,6 +313,35 @@ public final class SharedMapClient {
 
 	public static void handlePatchUnavailable(cn.net.rms.xaeromapsync_r.network.PatchUnavailablePayload payload) {
 		atomicMapSyncClient.handlePatchUnavailable(payload);
+	}
+
+	public static void handleGapRecoveryProbe(TileBatchRequestPayload payload) {
+		if (!connectedToSharedMapServer || mapAdapter == null || !mapAdapter.isAvailable()) return;
+		String dimension = currentDimension();
+		if (dimension == null) return;
+		int queued = 0;
+		for (cn.net.rms.xaeromapsync_r.network.TileRequestPayload request : payload.requests()) {
+			if (!dimension.equals(request.dimension())) continue;
+			if (mapAdapter.localTileState(dimension, request.chunkX(), request.chunkZ())
+					!= XaeroMapAdapter.LocalTileState.READY) continue;
+			Optional<MapTile> local = mapAdapter.localTile(dimension, request.chunkX(), request.chunkZ());
+			if (local.isEmpty() || !local.get().hasRenderableSurface()) continue;
+			String key = tileKey(dimension, request.chunkX(), request.chunkZ());
+			if (!RECOVERY_TILE_UPLOADS_IN_FLIGHT.add(key)) continue;
+			MapTile tile = local.get();
+			if (!SharedMapNetworking.sendRecoveryTileData(tile, successful -> {
+				RECOVERY_TILE_UPLOADS_IN_FLIGHT.remove(key);
+				if (!successful) XaeroMapsync_r.LOGGER.debug(
+						"map_sync event=gap_recovery_upload_failed dimension={} chunk_x={} chunk_z={}",
+						tile.dimension(), tile.chunkX(), tile.chunkZ());
+			})) {
+				RECOVERY_TILE_UPLOADS_IN_FLIGHT.remove(key);
+				continue;
+			}
+			queued++;
+		}
+		if (queued > 0) XaeroMapsync_r.LOGGER.info(
+				"map_sync event=gap_recovery_peer_response tiles={} priority=high", queued);
 	}
 
 	private static boolean enqueuePendingTileApply(String key, MapTile tile, long revision) {
@@ -1265,6 +1295,7 @@ public final class SharedMapClient {
 		LOCAL_TILE_PENDING_HASHES.clear();
 		LOCAL_TILE_PENDING_SINCE.clear();
 		LOCAL_TILE_UPLOADS_IN_FLIGHT.clear();
+		RECOVERY_TILE_UPLOADS_IN_FLIGHT.clear();
 		localLiveScanDimension = null;
 		localLiveScanRadius = -1;
 		localLiveScanCursor = 0;

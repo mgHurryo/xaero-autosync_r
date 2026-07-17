@@ -33,7 +33,7 @@ Connect both clients to `127.0.0.1:25565`. The clients use independent names, co
 
 ## Acceptance sequence
 
-1. Confirm both clients complete protocol 10 handshake without resetting the existing v6 world, tile store, client map caches or waypoints.
+1. Confirm both clients complete protocol 11 handshake without resetting the existing v6 world, tile store, client map caches or waypoints.
    Confirm the server logs `server_render_disabled` and does not reduce the preserved dirty queue unless `map.sync.server_render.enabled=true` was explicitly configured.
 2. Explore a new loaded area with client A. Verify A keeps Xaero's native local rendering without black holes or server replacement, then verify B receives A's uploaded native tile without visiting.
 3. Build and remove a visible surface platform; wait for STABLE processing and verify both transitions on B.

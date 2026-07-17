@@ -13,6 +13,7 @@ import cn.net.rms.xaeromapsync_r.server.access.SharedMapActors;
 import cn.net.rms.xaeromapsync_r.server.activity.RegionKey;
 import cn.net.rms.xaeromapsync_r.waypoint.PublicWaypoint;
 import io.netty.buffer.Unpooled;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -61,7 +62,9 @@ public final class SharedMapNetworking {
 	private static final int TRANSFER_TYPE_MAP_NODE_RESPONSE = 1;
 	private static final int TRANSFER_TYPE_TILE_DATA = 2;
 	private static final int TRANSFER_TYPE_TILE_DATA_BATCH = 3;
-	private static final int LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS = 64;
+	private static final int LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS = 1;
+	private static final int TILE_BATCH_ENVELOPE_BYTES = 16;
+	private static final int TILE_BATCH_TILE_ENVELOPE_BYTES = 96;
 	private static final LocalTileReadyHintLimiter LOCAL_TILE_HINT_LIMITER = new LocalTileReadyHintLimiter();
 	private static final ClientTileUploadLimiter CLIENT_TILE_UPLOAD_LIMITER = new ClientTileUploadLimiter();
 	private static final AtomicInteger TILE_BATCH_WORKER_IDS = new AtomicInteger();
@@ -79,10 +82,16 @@ public final class SharedMapNetworking {
 	}
 
 	public static void registerServerReceivers() {
+		XaeroMapsync_r.LOGGER.info("Registering shared map server packet receivers");
 		ServerPlayNetworking.registerGlobalReceiver(C2S_HELLO, (server, player, handler, buffer, responseSender) -> {
 			ClientHelloPayload hello = ClientHelloPayload.read(buffer);
 			server.execute(() -> {
 				ServerHelloPayload response = ServerHelloPayload.from(hello);
+				XaeroMapsync_r.LOGGER.debug(
+						"Handling client hello player={} protocol={} mapFormat={} xaeroAdapter={} compression={} maxPacketBytes={} accepted={}",
+						player.getGameProfile().getName(), hello.protocolVersion(), hello.mapFormatVersion(),
+						hello.xaeroAdapterVersion(), hello.compression(), hello.maxPacketBytes(),
+						response.accepted());
 				SharedMapServer.recordHandshake(player, hello, response.accepted());
 				FriendlyByteBuf responseBuffer = new FriendlyByteBuf(Unpooled.buffer());
 				response.write(responseBuffer);
@@ -113,9 +122,21 @@ public final class SharedMapNetworking {
 		});
 		ServerPlayNetworking.registerGlobalReceiver(C2S_LOCAL_TILE_DATA, (server, player, handler, buffer, responseSender) -> {
 			int packetBytes = buffer.readableBytes();
-			if (!SharedMapServer.hasAcceptedClient(player.getUUID())
-					|| packetBytes > SharedMapConfig.maxPacketBytes()
-					|| !CLIENT_TILE_UPLOAD_LIMITER.acquire(player.getUUID(), packetBytes, System.currentTimeMillis())) return;
+			if (!SharedMapServer.hasAcceptedClient(player.getUUID())) {
+				XaeroMapsync_r.LOGGER.warn("Rejected local tile upload before accepted handshake from {} bytes={}",
+						player.getGameProfile().getName(), packetBytes);
+				return;
+			}
+			if (packetBytes > SharedMapConfig.maxPacketBytes()) {
+				XaeroMapsync_r.LOGGER.warn("Rejected oversized local tile upload from {} bytes={} maxPacketBytes={}",
+						player.getGameProfile().getName(), packetBytes, SharedMapConfig.maxPacketBytes());
+				return;
+			}
+			if (!CLIENT_TILE_UPLOAD_LIMITER.acquire(player.getUUID(), packetBytes, System.currentTimeMillis())) {
+				XaeroMapsync_r.LOGGER.debug("Rate-limited local tile upload from {} bytes={}",
+						player.getGameProfile().getName(), packetBytes);
+				return;
+			}
 			TileDataPayload payload;
 			try {
 				payload = TileDataPayload.read(buffer);
@@ -148,6 +169,8 @@ public final class SharedMapNetworking {
 			server.execute(() -> runForAcceptedClient(player, () -> handleWaypointDelete(player, payload)));
 		});
 		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+			XaeroMapsync_r.LOGGER.debug("Clearing networking limiters for disconnected player {}",
+					handler.player.getGameProfile().getName());
 			LOCAL_TILE_HINT_LIMITER.remove(handler.player.getUUID());
 			CLIENT_TILE_UPLOAD_LIMITER.remove(handler.player.getUUID());
 		});
@@ -155,8 +178,10 @@ public final class SharedMapNetworking {
 
 	@Environment(EnvType.CLIENT)
 	public static void registerClientReceivers() {
+		XaeroMapsync_r.LOGGER.info("Registering shared map client packet receivers");
 		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> sendClientHello());
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+			XaeroMapsync_r.LOGGER.info("Shared map client network disconnected; clearing transfer manager");
 			ClientTransfers.MANAGER.clear();
 			SharedMapClient.disconnect();
 		});
@@ -234,6 +259,9 @@ public final class SharedMapNetworking {
 				.toList();
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		new TileBatchRequestPayload(requests).write(buffer);
+		XaeroMapsync_r.LOGGER.debug("Sending tile batch request count={} first={} {} {} revision={}",
+				requests.size(), requests.get(0).dimension(), requests.get(0).chunkX(),
+				requests.get(0).chunkZ(), requests.get(0).knownRevision());
 		ClientPlayNetworking.send(C2S_TILE_BATCH_REQUEST, buffer);
 	}
 
@@ -249,6 +277,8 @@ public final class SharedMapNetworking {
 		}
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		new MapNodeRequestPayload(syncId, requestId, nodes).write(buffer);
+		XaeroMapsync_r.LOGGER.debug("Sending map node request syncId={} requestId={} count={} first={}",
+				syncId, requestId, nodes.size(), nodes.iterator().next());
 		ClientPlayNetworking.send(C2S_MAP_NODE_REQUEST, buffer);
 	}
 
@@ -256,6 +286,8 @@ public final class SharedMapNetworking {
 	public static void sendLocalTileReady(String dimension, int chunkX, int chunkZ, long contentHash) {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		new LocalTileReadyPayload(dimension, chunkX, chunkZ, contentHash).write(buffer);
+		XaeroMapsync_r.LOGGER.debug("Sending local tile ready hint dimension={} chunk={} {} hash={}",
+				dimension, chunkX, chunkZ, Long.toUnsignedString(contentHash));
 		ClientPlayNetworking.send(C2S_LOCAL_TILE_READY, buffer);
 	}
 
@@ -264,10 +296,17 @@ public final class SharedMapNetworking {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		TileDataPayload payload = TileDataPayload.fromTile(tile, 0L, SharedMapConfig.compression());
 		if (payload.surfacePayload().length + 512 > SharedMapConfig.maxPacketBytes()) {
+			XaeroMapsync_r.LOGGER.debug(
+					"Local tile body too large for direct upload dimension={} chunk={} {} payloadBytes={} maxPacketBytes={}; sending ready hint",
+					tile.dimension(), tile.chunkX(), tile.chunkZ(), payload.surfacePayload().length,
+					SharedMapConfig.maxPacketBytes());
 			sendLocalTileReady(tile.dimension(), tile.chunkX(), tile.chunkZ(), tile.contentHash());
 			return;
 		}
 		payload.write(buffer);
+		XaeroMapsync_r.LOGGER.debug("Sending local tile body dimension={} chunk={} {} hash={} payloadBytes={}",
+				tile.dimension(), tile.chunkX(), tile.chunkZ(), Long.toUnsignedString(tile.contentHash()),
+				payload.surfacePayload().length);
 		ClientPlayNetworking.send(C2S_LOCAL_TILE_DATA, buffer);
 	}
 
@@ -280,12 +319,20 @@ public final class SharedMapNetworking {
 	@Environment(EnvType.CLIENT)
 	private static void sendClientHello() {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
-		ClientHelloPayload.current().write(buffer);
+		ClientHelloPayload hello = ClientHelloPayload.current();
+		hello.write(buffer);
+		XaeroMapsync_r.LOGGER.info(
+				"Sending shared map client hello protocol={} mapFormat={} xaeroAdapter={} compression={} maxPacketBytes={}",
+				hello.protocolVersion(), hello.mapFormatVersion(), hello.xaeroAdapterVersion(),
+				hello.compression(), hello.maxPacketBytes());
 		ClientPlayNetworking.send(C2S_HELLO, buffer);
 	}
 
 	@Environment(EnvType.CLIENT)
 	public static void requestEnabledSnapshots() {
+		XaeroMapsync_r.LOGGER.debug("Requesting enabled snapshots publicWaypoints={} mapSync={} mapAvailable={}",
+				SharedMapClientConfig.get().publicWaypointsEnabled(), SharedMapClientConfig.get().mapSyncEnabled(),
+				SharedMapClient.mapSyncAvailable());
 		if (SharedMapClientConfig.get().publicWaypointsEnabled()) requestWaypointSnapshot();
 		if (SharedMapClientConfig.get().mapSyncEnabled() && SharedMapClient.mapSyncAvailable()) requestMapSync();
 	}
@@ -294,6 +341,8 @@ public final class SharedMapNetworking {
 	public static void createWaypoint(PublicWaypoint waypoint) {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		new WaypointCreatePayload(waypoint).write(buffer);
+		XaeroMapsync_r.LOGGER.debug("Sending waypoint create id={} name={} visibility={} dimension={} revision={}",
+				waypoint.id(), waypoint.name(), waypoint.visibility(), waypoint.dimension(), waypoint.revision());
 		ClientPlayNetworking.send(C2S_WAYPOINT_CREATE, buffer);
 	}
 
@@ -301,6 +350,8 @@ public final class SharedMapNetworking {
 	public static void updateWaypoint(PublicWaypoint waypoint) {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		new WaypointUpdatePayload(waypoint, waypoint.revision()).write(buffer);
+		XaeroMapsync_r.LOGGER.debug("Sending waypoint update id={} name={} visibility={} dimension={} revision={}",
+				waypoint.id(), waypoint.name(), waypoint.visibility(), waypoint.dimension(), waypoint.revision());
 		ClientPlayNetworking.send(C2S_WAYPOINT_UPDATE, buffer);
 	}
 
@@ -308,11 +359,14 @@ public final class SharedMapNetworking {
 	public static void deleteWaypoint(PublicWaypoint waypoint) {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		new WaypointDeletePayload(waypoint.id(), waypoint.revision()).write(buffer);
+		XaeroMapsync_r.LOGGER.debug("Sending waypoint delete id={} name={} revision={}",
+				waypoint.id(), waypoint.name(), waypoint.revision());
 		ClientPlayNetworking.send(C2S_WAYPOINT_DELETE, buffer);
 	}
 
 	@Environment(EnvType.CLIENT)
 	public static void requestWaypointSnapshot() {
+		XaeroMapsync_r.LOGGER.debug("Sending waypoint snapshot request");
 		ClientPlayNetworking.send(C2S_WAYPOINT_SNAPSHOT_REQUEST, PacketByteBufs.create());
 	}
 
@@ -328,7 +382,10 @@ public final class SharedMapNetworking {
 		if (minecraft.level == null) return;
 		String dimension = minecraft.level.dimension().location().toString();
 		FriendlyByteBuf mapRootBuffer = PacketByteBufs.create();
-		new MapRootHashPayload(dimension, SharedMapClient.knownMapRootHash(dimension), syncId, requestId).write(mapRootBuffer);
+		long knownRootHash = SharedMapClient.knownMapRootHash(dimension);
+		new MapRootHashPayload(dimension, knownRootHash, syncId, requestId).write(mapRootBuffer);
+		XaeroMapsync_r.LOGGER.debug("Sending map root request dimension={} knownRoot={} syncId={} requestId={}",
+				dimension, Long.toUnsignedString(knownRootHash), syncId, requestId);
 		ClientPlayNetworking.send(C2S_MAP_ROOT_HASH, mapRootBuffer);
 	}
 
@@ -343,17 +400,28 @@ public final class SharedMapNetworking {
 		WaypointSnapshotPayload payload = new WaypointSnapshotPayload(0L, visible);
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		payload.write(buffer);
+		XaeroMapsync_r.LOGGER.debug("Sending waypoint visibility snapshot to {} visibleCount={} team={}",
+				player.getGameProfile().getName(), visible.size(), actor.teamName());
 		ServerPlayNetworking.send(player, S2C_WAYPOINT_SNAPSHOT, buffer);
 	}
 
 	private static void sendMapIndexIfChanged(net.minecraft.server.level.ServerPlayer player, MapRootHashPayload request) {
 		long rootHash = SharedMapServer.mapTiles().rootHash(request.dimension());
 		if (rootHash == request.knownRootHash()) {
+			XaeroMapsync_r.LOGGER.debug(
+					"Map root unchanged for {} dimension={} rootHash={} syncId={} requestId={}",
+					player.getGameProfile().getName(), request.dimension(),
+					Long.toUnsignedString(rootHash), request.syncId(), request.requestId());
 			sendMapNodePayload(player, request.dimension(), rootHash, request.syncId(), request.requestId(), false,
 					List.of(), List.of());
 			return;
 		}
 		List<MerkleNode> roots = SharedMapServer.mapTiles().merkleRoots(request.dimension());
+		XaeroMapsync_r.LOGGER.debug(
+				"Map root changed for {} dimension={} knownRoot={} serverRoot={} rootNodes={} syncId={} requestId={}",
+				player.getGameProfile().getName(), request.dimension(),
+				Long.toUnsignedString(request.knownRootHash()), Long.toUnsignedString(rootHash), roots.size(),
+				request.syncId(), request.requestId());
 		sendMapNodePayload(player, request.dimension(), rootHash, request.syncId(), request.requestId(), false, roots,
 				leafEntries(roots));
 	}
@@ -365,6 +433,10 @@ public final class SharedMapNetworking {
 				if (!dimension.equals(node.dimension())) throw new IllegalArgumentException("Mixed-dimension Merkle request");
 			}
 			List<MerkleNode> children = SharedMapServer.mapTiles().merkleChildren(request.nodes());
+			XaeroMapsync_r.LOGGER.debug(
+					"Sending map node response to {} dimension={} requestedNodes={} children={} syncId={} requestId={}",
+					player.getGameProfile().getName(), dimension, request.nodes().size(), children.size(),
+					request.syncId(), request.requestId());
 			sendMapNodePayload(player, dimension, SharedMapServer.mapTiles().rootHash(dimension), request.syncId(),
 					request.requestId(), true, children, leafEntries(children));
 		} catch (RuntimeException exception) {
@@ -392,6 +464,10 @@ public final class SharedMapNetworking {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		payload.write(buffer);
 		if (buffer.readableBytes() > SharedMapConfig.maxPacketBytes()) {
+			XaeroMapsync_r.LOGGER.debug(
+					"Map node payload exceeds packet budget for {} dimension={} bytes={} maxPacketBytes={}; starting transfer",
+					player.getGameProfile().getName(), dimension, buffer.readableBytes(),
+					SharedMapConfig.maxPacketBytes());
 			byte[] envelope = new byte[buffer.readableBytes() + 1];
 			envelope[0] = TRANSFER_TYPE_MAP_NODE_RESPONSE;
 			buffer.readBytes(envelope, 1, buffer.readableBytes());
@@ -399,12 +475,19 @@ public final class SharedMapNetworking {
 			return;
 		}
 		if (!SharedMapServer.networkBudget().trySpend(player.getUUID(), buffer.readableBytes())) {
+			XaeroMapsync_r.LOGGER.debug(
+					"Map node payload hit network budget for {} dimension={} bytes={}; starting transfer",
+					player.getGameProfile().getName(), dimension, buffer.readableBytes());
 			byte[] envelope = new byte[buffer.readableBytes() + 1];
 			envelope[0] = TRANSFER_TYPE_MAP_NODE_RESPONSE;
 			buffer.readBytes(envelope, 1, buffer.readableBytes());
 			startTransfer(player, envelope);
 			return;
 		}
+		XaeroMapsync_r.LOGGER.debug(
+				"Sending map node payload directly to {} dimension={} rootHash={} syncId={} requestId={} nodes={} entries={} bytes={}",
+				player.getGameProfile().getName(), dimension, Long.toUnsignedString(rootHash), syncId, requestId,
+				nodes.size(), entries.size(), buffer.readableBytes());
 		ServerPlayNetworking.send(player, S2C_MAP_NODE_RESPONSE, buffer);
 	}
 
@@ -412,20 +495,28 @@ public final class SharedMapNetworking {
 			LocalTileReadyPayload hint) {
 		if (LOCAL_TILE_HINT_LIMITER.acquire(player.getUUID(), hint, System.currentTimeMillis())
 				!= LocalTileReadyHintLimiter.Result.ACCEPTED) {
+			XaeroMapsync_r.LOGGER.debug("Rate-limited local tile ready hint from {} dimension={} chunk={} {} hash={}",
+					player.getGameProfile().getName(), hint.dimension(), hint.chunkX(), hint.chunkZ(),
+					Long.toUnsignedString(hint.contentHash()));
 			return;
 		}
 		net.minecraft.server.level.ServerLevel level = player.getLevel();
 		String currentDimension = level.dimension().location().toString();
 		if (!currentDimension.equals(hint.dimension())) {
+			XaeroMapsync_r.LOGGER.debug("Rejected local tile ready hint from {} because dimension changed hint={} current={}",
+					player.getGameProfile().getName(), hint.dimension(), currentDimension);
 			return;
 		}
 		net.minecraft.world.level.ChunkPos playerChunk = player.chunkPosition();
-		int allowedDistance = Math.max(2,
-				player.getServer().getPlayerList().getViewDistance() + LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS);
+		int allowedDistance = localTileUploadDistanceLimit(player.getServer().getPlayerList().getViewDistance());
 		long deltaX = Math.abs((long) hint.chunkX() - playerChunk.x);
 		long deltaZ = Math.abs((long) hint.chunkZ() - playerChunk.z);
 		if (Math.max(deltaX, deltaZ) > allowedDistance
 				|| !level.getChunkSource().hasChunk(hint.chunkX(), hint.chunkZ())) {
+			XaeroMapsync_r.LOGGER.debug(
+					"Rejected local tile ready hint from {} dimension={} chunk={} {} delta={} {} allowedDistance={} chunkLoaded={}",
+					player.getGameProfile().getName(), hint.dimension(), hint.chunkX(), hint.chunkZ(),
+					deltaX, deltaZ, allowedDistance, level.getChunkSource().hasChunk(hint.chunkX(), hint.chunkZ()));
 			return;
 		}
 
@@ -439,22 +530,40 @@ public final class SharedMapNetworking {
 		if (firstObservation || rendererRefreshNeeded) {
 			SharedMapServer.dirtyChunks().prioritizeDiscovered(hint.dimension(), hint.chunkX(), hint.chunkZ());
 		}
+		XaeroMapsync_r.LOGGER.debug(
+				"Accepted local tile ready hint from {} dimension={} chunk={} {} hash={} firstObservation={} rendererRefreshNeeded={}",
+				player.getGameProfile().getName(), hint.dimension(), hint.chunkX(), hint.chunkZ(),
+				Long.toUnsignedString(hint.contentHash()), firstObservation, rendererRefreshNeeded);
 	}
 
 	private static void handleLocalTileData(net.minecraft.server.level.ServerPlayer player, TileDataPayload upload) {
 		MapTile tile = upload.tile();
-		if (!SharedMapConfig.compression().equals(upload.compression())) return;
+		if (!SharedMapConfig.compression().equals(upload.compression())) {
+			XaeroMapsync_r.LOGGER.warn("Rejected local tile upload from {} due to compression mismatch upload={} server={}",
+					player.getGameProfile().getName(), upload.compression(), SharedMapConfig.compression());
+			return;
+		}
 		if (!tile.hasRenderableSurface()) {
 			SharedMapServer.dirtyChunks().prioritizeDiscovered(tile.dimension(), tile.chunkX(), tile.chunkZ());
+			XaeroMapsync_r.LOGGER.warn("Rejected unrenderable local tile upload from {} dimension={} chunk={} {} hash={}",
+					player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
+					Long.toUnsignedString(tile.contentHash()));
 			return;
 		}
 		LocalTileReadyPayload hint = new LocalTileReadyPayload(tile.dimension(), tile.chunkX(), tile.chunkZ(),
 				tile.contentHash());
 		if (LOCAL_TILE_HINT_LIMITER.acquire(player.getUUID(), hint, System.currentTimeMillis())
-				!= LocalTileReadyHintLimiter.Result.ACCEPTED) return;
+				!= LocalTileReadyHintLimiter.Result.ACCEPTED) {
+			XaeroMapsync_r.LOGGER.debug("Rate-limited local tile body from {} dimension={} chunk={} {} hash={}",
+					player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
+					Long.toUnsignedString(tile.contentHash()));
+			return;
+		}
 		net.minecraft.server.level.ServerLevel level = player.getLevel();
 		if (!validLocalTileContext(player, level, tile)) {
 			SharedMapServer.dirtyChunks().prioritizeDiscovered(tile.dimension(), tile.chunkX(), tile.chunkZ());
+			XaeroMapsync_r.LOGGER.debug("Rejected local tile body outside valid context from {} dimension={} chunk={} {}",
+					player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ());
 			return;
 		}
 
@@ -469,16 +578,29 @@ public final class SharedMapNetworking {
 			if (hasMatchingTileBody(current, currentBody, tile.contentHash())) {
 				SharedMapServer.dirtyChunks().confirmClientTile(
 						tile.dimension(), tile.chunkX(), tile.chunkZ(), dirtyGeneration);
+				XaeroMapsync_r.LOGGER.debug(
+						"Confirmed duplicate local tile upload from {} dimension={} chunk={} {} hash={} revision={} dirtyGeneration={}",
+						player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
+						Long.toUnsignedString(tile.contentHash()), current.revision(), dirtyGeneration);
 				return;
 			}
 		}
 
 		byte[] preparedPayload = upload.surfacePayload();
 		net.minecraft.server.MinecraftServer server = player.getServer();
+		XaeroMapsync_r.LOGGER.debug(
+				"Staging local tile upload from {} dimension={} chunk={} {} hash={} payloadBytes={} dirtyGeneration={} existingRevision={}",
+				player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
+				Long.toUnsignedString(tile.contentHash()), preparedPayload.length, dirtyGeneration,
+				current == null ? null : current.revision());
 		boolean accepted = SharedMapServer.tileData().stageAsynchronously(tile, staged -> {
 			if (staged.isEmpty()) {
-				server.execute(() -> SharedMapServer.dirtyChunks()
-						.prioritizeDiscovered(tile.dimension(), tile.chunkX(), tile.chunkZ()));
+				server.execute(() -> {
+					XaeroMapsync_r.LOGGER.warn("Failed to stage local tile upload from {} dimension={} chunk={} {}; prioritizing fallback render",
+							player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ());
+					SharedMapServer.dirtyChunks()
+							.prioritizeDiscovered(tile.dimension(), tile.chunkX(), tile.chunkZ());
+				});
 				return;
 			}
 			boolean committed = SharedMapServer.dirtyChunks().commitClientTile(
@@ -487,18 +609,34 @@ public final class SharedMapNetworking {
 			if (!committed) SharedMapServer.tileData().discardStaged(staged.get());
 			server.execute(() -> {
 				if (!committed) {
+					XaeroMapsync_r.LOGGER.debug("Discarded staged local tile upload from {} dimension={} chunk={} {} dirtyGeneration={} because dirty state changed",
+							player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
+							dirtyGeneration);
 					SharedMapServer.dirtyChunks().prioritizeDiscovered(tile.dimension(), tile.chunkX(), tile.chunkZ());
 					return;
 				}
 				MapTile latestBody = SharedMapServer.tileData()
 						.find(tile.dimension(), tile.chunkX(), tile.chunkZ()).orElse(null);
-				if (latestBody == null || latestBody.contentHash() != tile.contentHash()) return;
+				if (latestBody == null || latestBody.contentHash() != tile.contentHash()) {
+					XaeroMapsync_r.LOGGER.warn("Committed local tile upload from {} but latest body mismatch dimension={} chunk={} {} expectedHash={} actualHash={}",
+							player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
+							Long.toUnsignedString(tile.contentHash()),
+							latestBody == null ? "missing" : Long.toUnsignedString(latestBody.contentHash()));
+					return;
+				}
 				MapTileIndexEntry published = SharedMapServer.mapTiles().upsert(tile);
+				XaeroMapsync_r.LOGGER.debug(
+						"Published local tile upload from {} dimension={} chunk={} {} hash={} revision={} broadcastingToAcceptedClients={}",
+						player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
+						Long.toUnsignedString(tile.contentHash()), published.revision(),
+						SharedMapServer.acceptedClientCount());
 				broadcastTileData(server, tile, published, preparedPayload);
 			});
 		});
 		if (!accepted) {
 			SharedMapServer.dirtyChunks().prioritizeDiscovered(tile.dimension(), tile.chunkX(), tile.chunkZ());
+			XaeroMapsync_r.LOGGER.warn("Rejected local tile upload from {} because staging queue is busy dimension={} chunk={} {}",
+					player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ());
 		}
 	}
 
@@ -507,17 +645,23 @@ public final class SharedMapNetworking {
 				&& body != null && body.contentHash() == contentHash;
 	}
 
+	static int localTileUploadDistanceLimit(int serverViewDistance) {
+		return Math.max(2, serverViewDistance + LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS);
+	}
+
 	private static boolean validLocalTileContext(net.minecraft.server.level.ServerPlayer player,
 			net.minecraft.server.level.ServerLevel level, MapTile tile) {
 		if (!level.dimension().location().toString().equals(tile.dimension())) return false;
 		net.minecraft.world.level.ChunkPos playerChunk = player.chunkPosition();
-		int allowedDistance = Math.max(2,
-				player.getServer().getPlayerList().getViewDistance() + LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS);
+		int allowedDistance = localTileUploadDistanceLimit(player.getServer().getPlayerList().getViewDistance());
 		return Math.max(Math.abs((long) tile.chunkX() - playerChunk.x),
 				Math.abs((long) tile.chunkZ() - playerChunk.z)) <= allowedDistance;
 	}
 
 	private static void sendTileDataIfAvailable(net.minecraft.server.level.ServerPlayer player, TileRequestPayload request) {
+		XaeroMapsync_r.LOGGER.debug("Handling tile request from {} dimension={} chunk={} {} revision={}",
+				player.getGameProfile().getName(), request.dimension(), request.chunkX(), request.chunkZ(),
+				request.knownRevision());
 		MapTile tile = SharedMapServer.tileData().find(request.dimension(), request.chunkX(), request.chunkZ()).orElse(null);
 		byte[] preparedSurfacePayload = null;
 		if (tile == null || !tile.hasRenderableSurface()) {
@@ -538,8 +682,14 @@ public final class SharedMapNetworking {
 			TileDataPayload payload = preparedSurfacePayload == null
 					? TileDataPayload.fromTile(tile, entry.revision(), SharedMapConfig.compression())
 					: new TileDataPayload(tile, entry.revision(), SharedMapConfig.compression(), preparedSurfacePayload);
+			XaeroMapsync_r.LOGGER.debug("Sending requested tile to {} dimension={} chunk={} {} revision={} hash={} payloadBytes={}",
+					player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
+					entry.revision(), Long.toUnsignedString(tile.contentHash()), payload.surfacePayload().length);
 			sendTileData(player, payload, true);
 		} catch (RuntimeException exception) {
+			XaeroMapsync_r.LOGGER.warn("Failed to encode requested tile for {} dimension={} chunk={} {}",
+					player.getGameProfile().getName(), request.dimension(), request.chunkX(), request.chunkZ(),
+					exception);
 			sendTileUnavailable(player, request, "Stored tile cannot be encoded and must be regenerated");
 		}
 	}
@@ -548,6 +698,8 @@ public final class SharedMapNetworking {
 			TileBatchRequestPayload request) {
 		net.minecraft.server.MinecraftServer server = player.getServer();
 		String compression = SharedMapConfig.compression();
+		XaeroMapsync_r.LOGGER.debug("Handling tile batch request from {} count={} compression={}",
+				player.getGameProfile().getName(), request.requests().size(), compression);
 		try {
 			TILE_BATCH_WORKERS.execute(() -> {
 				List<PreparedTile> prepared = new ArrayList<>(request.requests().size());
@@ -573,6 +725,8 @@ public final class SharedMapNetworking {
 				}
 			});
 		} catch (RejectedExecutionException exception) {
+			XaeroMapsync_r.LOGGER.warn("Tile batch worker queue rejected request from {} count={}",
+					player.getGameProfile().getName(), request.requests().size(), exception);
 			for (TileRequestPayload tileRequest : request.requests()) {
 				sendTileUnavailable(player, tileRequest, "Map tile transfer queue is busy; retrying shortly");
 			}
@@ -581,10 +735,17 @@ public final class SharedMapNetworking {
 
 	private static void sendPreparedTileBatch(net.minecraft.server.level.ServerPlayer player,
 			List<PreparedTile> prepared, String compression) {
-		if (player.getServer().getPlayerList().getPlayer(player.getUUID()) != player) return;
+		if (player.getServer().getPlayerList().getPlayer(player.getUUID()) != player) {
+			XaeroMapsync_r.LOGGER.debug("Dropping prepared tile batch because player disconnected: {} prepared={}",
+					player.getGameProfile().getName(), prepared.size());
+			return;
+		}
 		List<TileDataPayload> available = new ArrayList<>(prepared.size());
+		int unavailable = 0;
+		int encodeFailures = 0;
 		for (PreparedTile result : prepared) {
 			if (result.tile == null) {
+				unavailable++;
 				if (SharedMapServer.exploredChunks().isExplored(result.request.dimension(),
 						result.request.chunkX(), result.request.chunkZ())) {
 					SharedMapServer.dirtyChunks().prioritizeDiscovered(result.request.dimension(),
@@ -597,16 +758,56 @@ public final class SharedMapNetworking {
 				continue;
 			}
 			if (result.surfacePayload == null) {
+				encodeFailures++;
 				sendTileUnavailable(player, result.request, "Stored tile cannot be encoded and must be regenerated");
 				continue;
 			}
 			MapTileIndexEntry entry = SharedMapServer.mapTiles().upsert(result.tile);
 			available.add(new TileDataPayload(result.tile, entry.revision(), compression, result.surfacePayload));
 		}
-		if (!available.isEmpty()) sendTileDataBatch(player, new TileBatchDataPayload(available));
+		List<TileBatchDataPayload> batches = splitTileDataBatchesForPacketBudget(available, SharedMapConfig.maxPacketBytes());
+		XaeroMapsync_r.LOGGER.debug(
+				"Prepared tile batch response for {} requested={} available={} unavailable={} encodeFailures={} responseBatches={}",
+				player.getGameProfile().getName(), prepared.size(), available.size(), unavailable,
+				encodeFailures, batches.size());
+		for (TileBatchDataPayload batch : batches) {
+			sendTileDataBatch(player, batch);
+		}
 	}
 
 	private record PreparedTile(TileRequestPayload request, MapTile tile, byte[] surfacePayload) {}
+
+	static List<TileBatchDataPayload> splitTileDataBatchesForPacketBudget(List<TileDataPayload> tiles,
+			int maxPacketBytes) {
+		if (tiles == null || tiles.isEmpty()) return List.of();
+		if (maxPacketBytes <= TILE_BATCH_ENVELOPE_BYTES) {
+			throw new IllegalArgumentException("Maximum packet bytes must leave room for a tile batch envelope");
+		}
+		List<TileBatchDataPayload> batches = new ArrayList<>();
+		List<TileDataPayload> current = new ArrayList<>(TileBatchDataPayload.MAX_TILES);
+		int currentBytes = TILE_BATCH_ENVELOPE_BYTES;
+		for (TileDataPayload tile : tiles) {
+			int tileBytes = estimatedTileDataBytes(tile);
+			if (!current.isEmpty()
+					&& (current.size() >= TileBatchDataPayload.MAX_TILES
+							|| currentBytes + tileBytes > maxPacketBytes)) {
+				batches.add(new TileBatchDataPayload(current));
+				current = new ArrayList<>(TileBatchDataPayload.MAX_TILES);
+				currentBytes = TILE_BATCH_ENVELOPE_BYTES;
+			}
+			current.add(tile);
+			currentBytes += tileBytes;
+		}
+		if (!current.isEmpty()) batches.add(new TileBatchDataPayload(current));
+		return List.copyOf(batches);
+	}
+
+	private static int estimatedTileDataBytes(TileDataPayload tile) {
+		return TILE_BATCH_TILE_ENVELOPE_BYTES
+				+ tile.tile().dimension().getBytes(StandardCharsets.UTF_8).length
+				+ tile.compression().getBytes(StandardCharsets.UTF_8).length
+				+ tile.surfacePayload().length;
+	}
 
 	/** Pushes newly published tile bodies immediately; Merkle polling remains recovery only. */
 	public static void broadcastTileData(net.minecraft.server.MinecraftServer server, MapTile tile, MapTileIndexEntry entry,
@@ -621,6 +822,9 @@ public final class SharedMapNetworking {
 		for (net.minecraft.server.level.ServerPlayer player : server.getPlayerList().getPlayers()) {
 			if (!SharedMapServer.hasAcceptedClient(player.getUUID())) continue;
 			if (!tile.dimension().equals(player.getLevel().dimension().location().toString())) continue;
+			XaeroMapsync_r.LOGGER.debug("Broadcasting tile data to {} dimension={} chunk={} {} revision={} hash={}",
+					player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
+					entry.revision(), Long.toUnsignedString(tile.contentHash()));
 			if (!sendTileData(player, payload, false)) {
 				XaeroMapsync_r.LOGGER.debug("Deferred active tile push for {} at {} {} {}; Merkle recovery remains available",
 						player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ());
@@ -634,11 +838,18 @@ public final class SharedMapNetworking {
 		payload.write(buffer);
 		if (buffer.readableBytes() > SharedMapConfig.maxPacketBytes()
 				|| !SharedMapServer.networkBudget().trySpend(player.getUUID(), buffer.readableBytes())) {
+			XaeroMapsync_r.LOGGER.debug("Sending tile data to {} via transfer dimension={} chunk={} {} revision={} bytes={} maxPacketBytes={}",
+					player.getGameProfile().getName(), payload.tile().dimension(), payload.tile().chunkX(),
+					payload.tile().chunkZ(), payload.revision(), buffer.readableBytes(),
+					SharedMapConfig.maxPacketBytes());
 			byte[] envelope = new byte[buffer.readableBytes() + 1];
 			envelope[0] = TRANSFER_TYPE_TILE_DATA;
 			buffer.readBytes(envelope, 1, buffer.readableBytes());
 			return startTransfer(player, envelope, reportBackpressure);
 		}
+		XaeroMapsync_r.LOGGER.debug("Sending tile data directly to {} dimension={} chunk={} {} revision={} bytes={}",
+				player.getGameProfile().getName(), payload.tile().dimension(), payload.tile().chunkX(),
+				payload.tile().chunkZ(), payload.revision(), buffer.readableBytes());
 		ServerPlayNetworking.send(player, S2C_TILE_DATA, buffer);
 		return true;
 	}
@@ -649,11 +860,16 @@ public final class SharedMapNetworking {
 		payload.write(buffer);
 		if (buffer.readableBytes() > SharedMapConfig.maxPacketBytes()
 				|| !SharedMapServer.networkBudget().trySpend(player.getUUID(), buffer.readableBytes())) {
+			XaeroMapsync_r.LOGGER.debug("Sending tile data batch to {} via transfer count={} bytes={} maxPacketBytes={}",
+					player.getGameProfile().getName(), payload.tiles().size(), buffer.readableBytes(),
+					SharedMapConfig.maxPacketBytes());
 			byte[] envelope = new byte[buffer.readableBytes() + 1];
 			envelope[0] = TRANSFER_TYPE_TILE_DATA_BATCH;
 			buffer.readBytes(envelope, 1, buffer.readableBytes());
 			return startTransfer(player, envelope, true);
 		}
+		XaeroMapsync_r.LOGGER.debug("Sending tile data batch directly to {} count={} bytes={}",
+				player.getGameProfile().getName(), payload.tiles().size(), buffer.readableBytes());
 		ServerPlayNetworking.send(player, S2C_TILE_DATA_BATCH, buffer);
 		return true;
 	}
@@ -662,6 +878,9 @@ public final class SharedMapNetworking {
 			String reason) {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		new TileUnavailablePayload(request.dimension(), request.chunkX(), request.chunkZ(), reason).write(buffer);
+		XaeroMapsync_r.LOGGER.debug("Sending tile unavailable to {} dimension={} chunk={} {} revision={} reason={}",
+				player.getGameProfile().getName(), request.dimension(), request.chunkX(), request.chunkZ(),
+				request.knownRevision(), reason);
 		ServerPlayNetworking.send(player, S2C_TILE_UNAVAILABLE, buffer);
 	}
 
@@ -793,6 +1012,8 @@ public final class SharedMapNetworking {
 			boolean reportBackpressure) {
 		try {
 			SharedMapServer.transfers().start(player, envelope);
+			XaeroMapsync_r.LOGGER.debug("Started fragmented transfer for {} bytes={} reportBackpressure={}",
+					player.getGameProfile().getName(), envelope.length, reportBackpressure);
 			return true;
 		} catch (IllegalStateException exception) {
 			XaeroMapsync_r.LOGGER.warn("Rejected excess fragmented transfer for {}", player.getGameProfile().getName());

@@ -68,6 +68,11 @@ public final class SharedMapServer {
 	public static void register() {
 		NETWORK_BUDGET.setBytesPerPlayerPerTick(SharedMapConfig.bytesPerPlayerPerTick());
 		NETWORK_BUDGET.setGlobalBytesPerTick(SharedMapConfig.globalBytesPerTick());
+		XaeroMapsync_r.LOGGER.info(
+				"Registering shared map server: bytesPerPlayerPerTick={} globalBytesPerTick={} maxPacketBytes={} compression={} protocol={} mapFormat={}",
+				SharedMapConfig.bytesPerPlayerPerTick(), SharedMapConfig.globalBytesPerTick(),
+				SharedMapConfig.maxPacketBytes(), SharedMapConfig.compression(),
+				SharedMapConfig.protocolVersion(), SharedMapConfig.mapFormatVersion());
 		SharedMapCommands.register();
 		ExplorationTracker.register();
 		MAP_TASKS.register();
@@ -89,6 +94,7 @@ public final class SharedMapServer {
 		});
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
 			stopping = false;
+			XaeroMapsync_r.LOGGER.info("Shared map server starting persistence stores and transfer managers");
 			TILE_DATA.start(server);
 			WAYPOINTS.load(server);
 			EXPLORED_CHUNKS.load(server);
@@ -105,10 +111,15 @@ public final class SharedMapServer {
 					queueStartupMapWork(server);
 				});
 			});
+			XaeroMapsync_r.LOGGER.info("Shared map tile index recovery started={}", recoveryStarted);
 			if (!recoveryStarted) queueStartupMapWork(server);
 		});
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
 			stopping = true;
+			XaeroMapsync_r.LOGGER.info(
+					"Shared map server stopping: acceptedClients={} waypoints={} exploredChunks={} dirtyChunks={} indexedTiles={}",
+					acceptedClientCount(), WAYPOINTS.activeCount(), EXPLORED_CHUNKS.totalCount(),
+					DIRTY_CHUNKS.totalCount(), MAP_TILES.totalCount());
 			TRANSFERS.clear();
 			TILE_DATA.stop();
 			WAYPOINTS.save(server);
@@ -120,6 +131,8 @@ public final class SharedMapServer {
 			CLIENT_TEAMS.clear();
 		});
 		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+			XaeroMapsync_r.LOGGER.info("Shared map client disconnected: {} acceptedBeforeDisconnect={}",
+					handler.player.getGameProfile().getName(), hasAcceptedClient(handler.player.getUUID()));
 			TRANSFERS.cancelPlayer(handler.player.getUUID());
 			CLIENTS.remove(handler.player.getUUID());
 			CLIENT_TEAMS.remove(handler.player.getUUID());
@@ -151,6 +164,10 @@ public final class SharedMapServer {
 				"Queued {} missing explored chunks and {} cached sampler-v{} tiles for rebuild",
 				missingExplored, staleSamplerTiles,
 				cn.net.rms.xaeromapsync_r.map.MapTileDebugRenderer.SURFACE_SAMPLER_VERSION);
+		XaeroMapsync_r.LOGGER.debug(
+				"Startup map work state exploredChunks={} dirtyChunks={} indexedTiles={} resample={} missingExplored={} staleSamplerTiles={}",
+				EXPLORED_CHUNKS.totalCount(), DIRTY_CHUNKS.totalCount(), MAP_TILES.totalCount(), resample,
+				missingExplored, staleSamplerTiles);
 	}
 
 	public static void recordHandshake(ServerPlayer player, ClientHelloPayload hello, boolean accepted) {
@@ -164,6 +181,9 @@ public final class SharedMapServer {
 					hello.xaeroAdapterVersion(),
 					hello.compression(),
 					hello.maxPacketBytes());
+			XaeroMapsync_r.LOGGER.debug("Accepted client state player={} uuid={} team={} acceptedClients={}",
+					player.getGameProfile().getName(), player.getUUID(), currentTeam(player).orElse(null),
+					acceptedClientCount());
 			return;
 		}
 		CLIENT_TEAMS.remove(player.getUUID());
@@ -196,6 +216,8 @@ public final class SharedMapServer {
 			Optional<String> currentTeam = currentTeam(player);
 			Optional<String> previousTeam = CLIENT_TEAMS.put(player.getUUID(), currentTeam);
 			if (previousTeam != null && !previousTeam.equals(currentTeam)) {
+				XaeroMapsync_r.LOGGER.info("Refreshing shared waypoint visibility for {} because team changed: {} -> {}",
+						player.getGameProfile().getName(), previousTeam.orElse(null), currentTeam.orElse(null));
 				cn.net.rms.xaeromapsync_r.network.SharedMapNetworking.refreshWaypointVisibility(player);
 			}
 		}

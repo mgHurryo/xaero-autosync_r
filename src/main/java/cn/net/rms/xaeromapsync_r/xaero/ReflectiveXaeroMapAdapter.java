@@ -42,10 +42,13 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				XaeroMapsync_r.LOGGER.info("Xaero World Map is not installed; reflective map injection is disabled");
 			} else {
 				String version = xaero.getMetadata().getVersion().getFriendlyString();
+				XaeroMapsync_r.LOGGER.info("Detected Xaero World Map version {}; supportedVersion={}",
+						version, SUPPORTED_VERSION);
 				if (!supportsVersion(version)) {
 					XaeroMapsync_r.LOGGER.warn("Unsupported Xaero World Map version {}; expected {}. Map injection is disabled", version, SUPPORTED_VERSION);
 				} else {
 					resolvedRuntime = new Xaero1251Runtime();
+					XaeroMapsync_r.LOGGER.info("Xaero World Map reflective runtime initialized for version {}", version);
 				}
 			}
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
@@ -73,11 +76,23 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 	@Override
 	public ApplyResult applyBatchResult(List<MapTile> tiles) {
 		if (!available) {
+			XaeroMapsync_r.LOGGER.debug("Skipped Xaero map apply because adapter is unavailable tiles={}",
+					tiles == null ? 0 : tiles.size());
 			return ApplyResult.UNAVAILABLE;
 		}
 		try {
 			validateBatch(tiles);
+			MapTile first = tiles.get(0);
+			XaeroMapsync_r.LOGGER.debug(
+					"Applying Xaero map tile batch size={} dimension={} region={} {} firstChunk={} {} firstHash={}",
+					tiles.size(), first.dimension(), regionCoordinate(first.chunkX()),
+					regionCoordinate(first.chunkZ()), first.chunkX(), first.chunkZ(),
+					Long.toUnsignedString(first.contentHash()));
 			runtime.applyBatch(tiles);
+			XaeroMapsync_r.LOGGER.debug(
+					"Applied Xaero map tile batch size={} dimension={} region={} {}",
+					tiles.size(), first.dimension(), regionCoordinate(first.chunkX()),
+					regionCoordinate(first.chunkZ()));
 			return ApplyResult.APPLIED;
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
 			if (isNotReady(exception)) {
@@ -103,9 +118,18 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 	public LocalTileState localTileState(String dimension, int chunkX, int chunkZ) {
 		if (!available) return LocalTileState.REMOTE;
 		try {
-			return runtime.localTileState(dimension, chunkX, chunkZ);
+			LocalTileState state = runtime.localTileState(dimension, chunkX, chunkZ);
+			if (state != LocalTileState.REMOTE) {
+				XaeroMapsync_r.LOGGER.debug("Xaero local tile state dimension={} chunk={} {} state={}",
+						dimension, chunkX, chunkZ, state);
+			}
+			return state;
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
-			if (isNotReady(exception)) return LocalTileState.GENERATING;
+			if (isNotReady(exception)) {
+				XaeroMapsync_r.LOGGER.debug("Xaero local tile state deferred dimension={} chunk={} {} reason={}",
+						dimension, chunkX, chunkZ, exception.getMessage());
+				return LocalTileState.GENERATING;
+			}
 			available = false;
 			XaeroMapsync_r.LOGGER.error("Xaero local map ownership detection failed; adapter disabled for this session", exception);
 			return LocalTileState.REMOTE;
@@ -116,9 +140,18 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 	public Optional<MapTile> localTile(String dimension, int chunkX, int chunkZ) {
 		if (!available) return Optional.empty();
 		try {
-			return runtime.localTile(dimension, chunkX, chunkZ).filter(ReflectiveXaeroMapAdapter::isUsableLocalSnapshot);
+			Optional<MapTile> local = runtime.localTile(dimension, chunkX, chunkZ)
+					.filter(ReflectiveXaeroMapAdapter::isUsableLocalSnapshot);
+			local.ifPresent(tile -> XaeroMapsync_r.LOGGER.debug(
+					"Extracted Xaero local tile snapshot dimension={} chunk={} {} hash={}",
+					tile.dimension(), tile.chunkX(), tile.chunkZ(), Long.toUnsignedString(tile.contentHash())));
+			return local;
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
-			if (isNotReady(exception)) return Optional.empty();
+			if (isNotReady(exception)) {
+				XaeroMapsync_r.LOGGER.debug("Xaero local tile extraction deferred dimension={} chunk={} {} reason={}",
+						dimension, chunkX, chunkZ, exception.getMessage());
+				return Optional.empty();
+			}
 			available = false;
 			XaeroMapsync_r.LOGGER.error("Xaero local map tile extraction failed; adapter disabled for this session", exception);
 			return Optional.empty();
@@ -382,6 +415,11 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			chunkHasHadTerrainField = field(mapTileChunkClass, "hasHadTerrain", boolean.class);
 			regionHasHadTerrainField = field(mapRegionClass, "hasHadTerrain", boolean.class);
 			chunkCleanFieldHolder = field(xaeroCoreClass, "chunkCleanField", Field.class);
+			XaeroMapsync_r.LOGGER.debug(
+					"Validated Xaero 1.25.1 reflective signatures: session={} processor={} region={} tileChunk={} tile={} block={} biomeKey={}",
+					sessionClass.getName(), mapProcessorClass.getName(), mapRegionClass.getName(),
+					mapTileChunkClass.getName(), xaeroMapTileClass.getName(), mapBlockClass.getName(),
+					biomeKeyClass.getName());
 		}
 
 		@Override
@@ -399,20 +437,30 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			if (xaeroTile != null && (Boolean) invoke(isTileLoaded, xaeroTile)
 					&& (Boolean) invoke(wasTileWrittenOnce, xaeroTile)
 					&& hasRenderableTileData(xaeroTile)) {
+				XaeroMapsync_r.LOGGER.debug("Xaero reports local tile ready dimension={} chunk={} {}",
+						dimension, chunkX, chunkZ);
 				return LocalTileState.READY;
 			}
 			LevelChunk chunk = minecraft.level.getChunkSource().getChunkNow(chunkX, chunkZ);
 			if (chunk == null) return LocalTileState.REMOTE;
 			Field chunkCleanField = (Field) chunkCleanFieldHolder.get(null);
-			return chunkCleanField != null && chunkCleanField.getBoolean(chunk)
+			LocalTileState state = chunkCleanField != null && chunkCleanField.getBoolean(chunk)
 					? LocalTileState.REMOTE
 					: LocalTileState.GENERATING;
+			if (state == LocalTileState.GENERATING) {
+				XaeroMapsync_r.LOGGER.debug("Xaero local chunk is dirty/generating dimension={} chunk={} {}",
+						dimension, chunkX, chunkZ);
+			}
+			return state;
 		}
 
 		@Override
 		public Optional<MapTile> localTile(String dimension, int chunkX, int chunkZ) throws ReflectiveOperationException {
 			Minecraft minecraft = Minecraft.getInstance();
 			if (!minecraft.isSameThread() || !isSnapshotDimensionCurrent(dimension, null, minecraft)) {
+				XaeroMapsync_r.LOGGER.debug("Skipped Xaero local snapshot dimension={} chunk={} {} sameThread={} currentDimension={}",
+						dimension, chunkX, chunkZ, minecraft.isSameThread(),
+						minecraft.level == null ? null : minecraft.level.dimension().location().toString());
 				return Optional.empty();
 			}
 			Object session = invoke(currentSession, null);
@@ -431,6 +479,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				}
 			});
 			if (failure[0] != null) throwCause(failure[0]);
+			XaeroMapsync_r.LOGGER.debug("Xaero local snapshot result dimension={} chunk={} {} present={}",
+					dimension, chunkX, chunkZ, snapshot[0] != null);
 			return Optional.ofNullable(snapshot[0]);
 		}
 
@@ -440,7 +490,11 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			int regionX = regionCoordinate(chunkX);
 			int regionZ = regionCoordinate(chunkZ);
 			Object region = invoke(getMapRegion, processor, regionX, regionZ, false);
-			if (region == null) return null;
+			if (region == null) {
+				XaeroMapsync_r.LOGGER.debug("Xaero local snapshot missing region dimension={} region={} {} chunk={} {}",
+						dimension, regionX, regionZ, chunkX, chunkZ);
+				return null;
+			}
 
 			Object writerSync = writerThreadPauseSyncField.get(region);
 			synchronized (writerSync) {
@@ -448,16 +502,30 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					if (!isSnapshotDimensionCurrent(dimension, processor, minecraft)
 							|| invoke(getMapRegion, processor, regionX, regionZ, false) != region
 							|| ((Number) invoke(getRegionLoadState, region)).byteValue() != 2) {
+						XaeroMapsync_r.LOGGER.debug("Xaero local snapshot region not ready dimension={} region={} {} chunk={} {}",
+								dimension, regionX, regionZ, chunkX, chunkZ);
 						return null;
 					}
 					int tileChunkX = tileChunkCoordinate(chunkX);
 					int tileChunkZ = tileChunkCoordinate(chunkZ);
 					Object chunk = invoke(getChunk, region, Math.floorMod(tileChunkX, 8), Math.floorMod(tileChunkZ, 8));
-					if (chunk == null || ((Number) invoke(getChunkLoadState, chunk)).intValue() != 2) return null;
+					if (chunk == null || ((Number) invoke(getChunkLoadState, chunk)).intValue() != 2) {
+						XaeroMapsync_r.LOGGER.debug("Xaero local snapshot chunk not ready dimension={} chunk={} {} tileChunk={} {}",
+								dimension, chunkX, chunkZ, tileChunkX, tileChunkZ);
+						return null;
+					}
 					Object xaeroTile = invoke(getTile, chunk, Math.floorMod(chunkX, 4), Math.floorMod(chunkZ, 4));
 					if (xaeroTile == null || !(Boolean) invoke(isTileLoaded, xaeroTile)
-							|| !(Boolean) invoke(wasTileWrittenOnce, xaeroTile)) return null;
-					if (!hasRenderableTileData(xaeroTile)) return null;
+							|| !(Boolean) invoke(wasTileWrittenOnce, xaeroTile)) {
+						XaeroMapsync_r.LOGGER.debug("Xaero local snapshot tile not loaded/written dimension={} chunk={} {}",
+								dimension, chunkX, chunkZ);
+						return null;
+					}
+					if (!hasRenderableTileData(xaeroTile)) {
+						XaeroMapsync_r.LOGGER.debug("Xaero local snapshot tile has no renderable data dimension={} chunk={} {}",
+								dimension, chunkX, chunkZ);
+						return null;
+					}
 
 					return snapshotTile(dimension, chunkX, chunkZ, xaeroTile, minecraft);
 				}
@@ -475,6 +543,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 
 		private boolean hasRenderableTileData(Object xaeroTile) throws ReflectiveOperationException {
 			boolean hasSurfaceBlock = false;
+			boolean hasOverlayBlock = false;
 			for (int localZ = 0; localZ < TILE_SIDE; localZ++) {
 				for (int localX = 0; localX < TILE_SIDE; localX++) {
 					Object block = invoke(getMapBlock, xaeroTile, localX, localZ);
@@ -483,9 +552,11 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 						return false;
 					}
 					hasSurfaceBlock |= !((BlockState) state).isAir();
+					List<?> overlays = (List<?>) invoke(getBlockOverlays, block);
+					hasOverlayBlock |= overlays != null && !overlays.isEmpty();
 				}
 			}
-			return hasSurfaceBlock;
+			return hasSurfaceBlock || hasOverlayBlock;
 		}
 
 		private MapTile snapshotTile(String dimension, int chunkX, int chunkZ, Object xaeroTile,
@@ -537,6 +608,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			MapTile unhashed = new MapTile(dimension, chunkX, chunkZ, baseStateIds, baseHeights, topHeights,
 					biomeKeys, lightAbove, glowing, cave, overlays, 0L);
 			long contentHash = MapTileHasher.hashSurface(unhashed);
+			XaeroMapsync_r.LOGGER.debug("Snapshotted Xaero tile dimension={} chunk={} {} hash={}",
+					dimension, chunkX, chunkZ, Long.toUnsignedString(contentHash));
 			return new MapTile(dimension, chunkX, chunkZ, baseStateIds, baseHeights, topHeights,
 					biomeKeys, lightAbove, glowing, cave, overlays, contentHash);
 		}
@@ -555,6 +628,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			}
 			String currentDimensionId = minecraft.level.dimension().location().toString();
 			if (!isCurrentDimension(first.dimension(), currentDimensionId)) {
+				XaeroMapsync_r.LOGGER.debug("Deferred Xaero apply because dimension is not current target={} current={} batchSize={}",
+						first.dimension(), currentDimensionId, sources.size());
 				throw new IllegalStateException("Xaero map tile dimension is not loaded yet: " + first.dimension());
 			}
 
@@ -569,6 +644,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			Object saveLoad = invoke(getMapSaveLoad, processor);
 			Object biomeKeyManager = biomeKeyManagerField.get(saveLoad);
 			Throwable[] failure = new Throwable[1];
+			XaeroMapsync_r.LOGGER.debug("Waiting for Xaero loading before applying batch dimension={} size={} region={} {}",
+					first.dimension(), sources.size(), regionCoordinate(first.chunkX()), regionCoordinate(first.chunkZ()));
 			invoke(waitForLoadingToFinish, processor, (Runnable) () -> {
 				try {
 					applyAfterLoading(sources, processor, saveLoad, biomeKeyManager, minecraft);
@@ -577,6 +654,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				}
 			});
 			if (failure[0] != null) {
+				XaeroMapsync_r.LOGGER.debug("Xaero apply failed after loading callback dimension={} size={} reason={}",
+						first.dimension(), sources.size(), failure[0].getMessage());
 				throwCause(failure[0]);
 			}
 		}
@@ -600,6 +679,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 						invoke(requestLoad, saveLoad, region, "shared map sync");
 					}
 				}
+				XaeroMapsync_r.LOGGER.debug("Requested Xaero region load for apply dimension={} region={} {} size={}",
+						source.dimension(), regionX, regionZ, sources.size());
 				throw new IllegalStateException("Xaero region is not fully loaded: state=0");
 			}
 
@@ -611,6 +692,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 						throw new IllegalStateException("Unsupported Xaero region load state " + loadState);
 					}
 					if (loadState == 2) {
+						XaeroMapsync_r.LOGGER.debug("Xaero region ready for apply dimension={} region={} {} size={}",
+								source.dimension(), regionX, regionZ, sources.size());
 						applyLocked(sources, processor, saveLoad, region, biomeKeyManager, minecraft);
 						return;
 					}
@@ -624,7 +707,15 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					if (shouldRequestRegionLoad(loadState, reloadRequested, queuedForLoad, recacheRequested)) {
 						invoke(setBeingWritten, region, true);
 						invoke(requestLoad, saveLoad, region, "shared map sync retry");
+						XaeroMapsync_r.LOGGER.debug(
+								"Requested Xaero region reload for apply dimension={} region={} {} state={} reloadRequested={} queuedForLoad={} recacheRequested={}",
+								source.dimension(), regionX, regionZ, loadState, reloadRequested, queuedForLoad,
+								recacheRequested);
 					}
+					XaeroMapsync_r.LOGGER.debug(
+							"Deferred Xaero apply dimension={} region={} {} state={} reloadRequested={} queuedForLoad={} recacheRequested={}",
+							source.dimension(), regionX, regionZ, loadState, reloadRequested, queuedForLoad,
+							recacheRequested);
 					throw new IllegalStateException("Xaero region " + regionX + "," + regionZ
 							+ " is not fully loaded: state=" + loadState);
 				}
@@ -725,11 +816,17 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					invoke(setShouldCache, region, false, "shared map sync mutation");
 					invoke(setRecacheHasBeenRequested, region, false, "shared map sync mutation");
 					removedNativeCacheRequest = true;
+					XaeroMapsync_r.LOGGER.debug("Removed stale Xaero native cache request before apply dimension={} region={} {}",
+							source.dimension(), regionCoordinate(source.chunkX()), regionCoordinate(source.chunkZ()));
 				}
 				List<Object> xaeroTiles = new ArrayList<>(sources.size());
 				for (MapTile tile : sources) {
 					xaeroTiles.add(createTile(tile, processor, biomeKeyManager, minecraft));
 				}
+				XaeroMapsync_r.LOGGER.debug(
+						"Created Xaero tile objects for apply dimension={} batchSize={} originalRegionLoadState={} originalBeingWritten={} originalRefreshing={} originalShouldCache={} originalRecacheRequested={}",
+						source.dimension(), sources.size(), originalRegionLoadState, originalBeingWritten,
+						originalRefreshing, originalShouldCache, originalRecacheRequested);
 				for (int index = 0; index < sources.size(); index++) {
 					MapTile tile = sources.get(index);
 					int tileChunkX = tileChunkCoordinate(tile.chunkX());
@@ -744,6 +841,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 						if (created) {
 							chunk = construct(mapTileChunkConstructor, region, tileChunkX, tileChunkZ);
 							invoke(setChunkLoadState, chunk, (byte) 2);
+							XaeroMapsync_r.LOGGER.debug("Created missing Xaero tile chunk dimension={} tileChunk={} {} regionSlot={} {}",
+									tile.dimension(), tileChunkX, tileChunkZ, chunkInRegionX, chunkInRegionZ);
 						}
 						snapshot = new ChunkSnapshot(chunk, chunkInRegionX, chunkInRegionZ, created,
 								((Number) invoke(getChunkLoadState, chunk)).byteValue(),
@@ -764,7 +863,13 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				// actually schedules cache work. Pre-clearing it can queue an impossible save.
 				invoke(requestRefresh, region, processor);
 				deferNativeSave(region, originalBeingWritten);
+				XaeroMapsync_r.LOGGER.debug("Finished Xaero apply mutation dimension={} region={} {} batchSize={} chunksTouched={} mutations={}",
+						source.dimension(), regionCoordinate(source.chunkX()), regionCoordinate(source.chunkZ()),
+						sources.size(), chunks.size(), mutations.size());
 			} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
+				XaeroMapsync_r.LOGGER.warn("Rolling back Xaero apply mutation dimension={} region={} {} batchSize={} chunksTouched={} mutations={} reason={}",
+						source.dimension(), regionCoordinate(source.chunkX()), regionCoordinate(source.chunkZ()),
+						sources.size(), chunks.size(), mutations.size(), exception.getMessage());
 				try {
 					if ((Boolean) invoke(isRefreshing, region)) {
 						invoke(cancelRefresh, region, processor);
@@ -789,6 +894,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 						invoke(setShouldCache, region, originalShouldCache, "shared map sync rollback");
 						invoke(setRecacheHasBeenRequested, region, originalRecacheRequested, "shared map sync rollback");
 						invoke(requestCache, saveLoad, region);
+						XaeroMapsync_r.LOGGER.debug("Restored Xaero native cache request during rollback dimension={} region={} {}",
+								source.dimension(), regionCoordinate(source.chunkX()), regionCoordinate(source.chunkZ()));
 					}
 				} catch (ReflectiveOperationException | RuntimeException | LinkageError rollbackException) {
 					exception.addSuppressed(rollbackException);
@@ -812,6 +919,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				// unprepared cache and crash the client.
 				lastSaveTimeField.setLong(region, now);
 				invoke(setBeingWritten, region, true);
+				XaeroMapsync_r.LOGGER.debug("Deferred Xaero native save originalLastSaveTime={} newLastSaveTime={} originalBeingWritten={}",
+						originalLastSaveTime, now, originalBeingWritten);
 			} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
 				lastSaveTimeField.setLong(region, originalLastSaveTime);
 				invoke(setBeingWritten, region, originalBeingWritten);

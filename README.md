@@ -1,68 +1,123 @@
 # Xaero Map Sync
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Minecraft](https://img.shields.io/badge/Minecraft-1.17.1-green.svg)](https://www.minecraft.net/)
 [![Fabric](https://img.shields.io/badge/Fabric-Loader%200.19.3-blue.svg)](https://fabricmc.net/)
 
-面向 Minecraft Java Edition 1.17.1 Fabric 服务器的共享地图与路径点同步 Mod。客户端上传 Xaero 已渲染地图，服务器只负责合并、持久化和分发地图 tile，并维护共享路径点；客户端继续使用 Xaero World Map 与 Xaero Minimap 的原生界面查看和管理同步结果。
+Xaero Map Sync is a shared map and waypoint synchronization mod for Minecraft Java Edition 1.17.1 Fabric servers. Clients upload map tiles that Xaero has already rendered; the server validates, merges, persists, and distributes them. Players continue to view maps and manage waypoints through the native Xaero World Map and Xaero Minimap interfaces.
 
-当前预发布版本为 `3.0.0-alpha.6`，固定适配：
+The current release is `3.0.0-alpha.6`, with network protocol `v11` and map storage format `v6`.
 
-- Xaero's World Map `1.25.1`
-- Xaero's Minimap `22.11.1`
+## Compatibility
 
-## 路径点操作
+| Component | Version or requirement |
+| --- | --- |
+| Minecraft | `1.17.1` |
+| Fabric Loader | `>= 0.19.3` |
+| Fabric API | `0.46.1+1.17` |
+| Xaero's World Map | `1.25.1` |
+| Xaero's Minimap | `22.11.1` |
+| Mod runtime | Java `16+`; local run tasks use Java 17 |
+| Build environment | JDK 21; sources compile to the Java 16 target |
 
-本 Mod 不提供独立的路径点创建器，也不会自动上传私人路径点。所有共享操作都在 Xaero 原生路径点管理页中完成：
+Xaero integration uses reflective adapters. If the detected version or reflection contract does not match, the corresponding adapter is disabled instead of writing an unknown format.
 
-1. 使用 Xaero 的路径点快捷键打开原生路径点管理页。
-2. 在 Xaero 列表中只选择一个现有路径点。
-3. 查看状态标签，点击 `公开共享`；只有玩家已加入计分板队伍时才显示 `队伍共享`。
-4. 已共享路径点名称前显示锁图标，共享和修改按钮变灰；如需移除，点击仍可用的 `删除共享` 并确认提示。
+## Core capabilities
 
-共享路径点统一放入独立的 `共享路径点` / `Shared Waypoints` 集合，不改变玩家当前使用的 Xaero 路径点集合。创建者客户端会把所选的原生 Xaero 路径点移动到该集合，不再创建本地副本；删除共享后恢复到原集合。其他有权限的客户端会收到服务器同步的 Xaero 路径点副本。路径点一经共享即不可修改，所有客户端都会恢复服务器版本，但仍可使用 Xaero 原生启用/禁用操作仅在本机隐藏。任何可见该点的玩家均可在确认提示后删除。公开和队伍可见性、创建者身份、revision 与删除 tombstone 均由服务器校验和维护。
+- Synchronizes Xaero-rendered 16x16-chunk map tiles across clients.
+- Does not generate maps on the server by default. `map.sync.server_render.enabled=true` is an explicit diagnostic or disaster-recovery option.
+- Uses revisions, content hashes, Merkle trees, catalog epochs, and sync generations for incremental synchronization without full-map downloads or stale-response contamination.
+- Coalesces tiles for two seconds and publishes complete square patches with side lengths from 1 to 32 inside each Xaero 32x32 region.
+- Transfers large patches with zlib compression, CRC32 fragments, ACK/NACK, timeouts, and bounded exponential backoff. A failed transfer does not clear existing Xaero map data.
+- Keeps native local Xaero output authoritative for loaded areas. Remote data only fills unfinished local areas and is committed atomically by region.
+- Lets online clients participate in gap recovery. Archived remote tiles use fill-only merging and never overwrite an existing server body.
+- Supports PUBLIC and TEAM waypoints, immutable locking, deletion tombstones, regional permissions, quotas, and audit logs.
+- Uses mixins to collect block, TNT, explosion, piston, and light activity, maintaining STORM/COOLDOWN state for 8x8-chunk regions and adapting background work to MSPT.
+- Provides administrator commands for bandwidth budgets, task suspension, regional control, tracing, and storage maintenance.
 
-Xaero 22.11.1 的路径点颜色是 `0..15` 的调色板索引。服务端加载、写操作和客户端落地都会校验该范围，并迁移旧版本错误写入的 RGB 值，防止 Xaero 渲染器数组越界。
+## How synchronization works
 
-## 已实现
+1. On startup, the server loads tiles, indexes, exploration records, the dirty queue, waypoints, and regional permissions. A missing index can be rebuilt from `.tile` files.
+2. A connecting client exchanges protocol, map format, and Xaero adapter versions. Only accepted handshakes participate in synchronization.
+3. Across multiple ticks, the client scans Xaero's loaded area and local archive. Stable content is hashed, deduplicated, and uploaded.
+4. The server validates the handshake, dimension, format, renderability, size, merge mode, and rate limits, atomically persists the tile body, and updates the index, Merkle root, and patch catalog.
+5. The client compares Merkle nodes and requests missing tiles or patches. Verified downloads are applied in Xaero-region batches.
+6. The server owns waypoint revisions, visibility, creator/team identity, and tombstones, then sends snapshots or incremental events only to clients allowed to view them.
 
-- 客户端与服务端协议握手和兼容性校验。
-- 自动地图来源只接受客户端 Xaero 已完成渲染的 tile；服务端不根据出生点、历史 dirty 队列或自然加载区块自动采样地形，因此不会凭空补全客户端从未去过的区域。
-- 16x16 地表 tile、revision、探索索引和持久化；客户端上传后进入 2 秒聚合窗口。
-- v6 地图格式同步 Xaero 使用的地表高度、顶部高度、稳定生物群系键、光照、发光、透明层和累积不透明度，保留水体、冰、玻璃、树叶与含水方块的原生渲染语义。
-- 客户端始终优先使用 Xaero 对本机已加载区块生成的原生地图；服务端瓦片只补充本机未加载区域，不覆盖正在生成或已经完成的本机结果。
-- 服务端等待 2 秒合并更新，并在每个 Xaero 32x32 region 内按最大正方形优先切成边长 1–32 的完整 patch；不发布缺边的稀疏点包，也不补黑或清空未声明坐标。
-- A/B 客户端会渐进上传 Xaero 已写入的本地地图。玩家附近的新数据可以更新服务端；远处历史数据仅填补服务端缺失 tile，绝不覆盖已有服务端 body。
-- 当前加载范围使用跨 tick 持久游标扫描，不再每次从中心重新开始；每次最多检查 256 个 tile、并行排队 64 个上传。实时 tile 的 hash 稳定 2 秒后才发布，相同内容在本次连接中不会重复上传。
-- manifest 按玩家视口和移动方向分为前方核心、邻近环和后台三档；边长 3–32 的主波次最多并发请求 8 个 patch，全部校验后按 Xaero region 统一释放，单 tick 提交预算为 4ms。
-- 1x1/2x2 小型补洞包进入服务端低优先级队列。只有普通波次清空且玩家与全局带宽低于 50% 低水位时才逐个发送；客户端保持最多 8 个请求在途，并按 2 秒/128 包窗口合并同 Xaero region 提交，减少 refresh 与磁盘保存次数。
-- patch body 使用带 CRC32 的分片、ACK/NACK、超时和有限指数退避；缺片只重传当前传输，失败不会清空已有 Xaero 地图。
-- patch 中仍在本地生成的 tile 不会阻塞同包远端部分；等待 2 秒后仅提交非加载区远端子集，将加载区交还本机 Xaero 并完成 patch，不再永久挂起或重复下载整包。
-- 服务端异常退出后从持久化 tile 自动重建地图索引。
-- 协议 v11 使用同步代次和 catalog epoch 隔离迟到响应，并携带正方形原点与边长；patch hash 不包含全局 epoch，单一区域变化不会触发全图重下。v11 还增加了缺口恢复探测，让在线客户端可以优先回传自己已有的 Xaero tile。
-- 服务端为已发布 catalog 保留最多 16,384 个被替换的 tile body 内存历史；旧 epoch 请求按内容 hash 读取对应版本，不会因活跃 tile 后续更新而出现 `missing-tile-body`。
-- 8x8 chunk 活动区域、STORM/COOLDOWN、MSPT 自适应暂停。
-- TNT、爆炸、活塞和光照更新活动信号。
-- Xaero World Map `1.25.1` 与 Xaero Minimap `22.11.1` 反射适配。
-- PUBLIC/TEAM 路径点创建、不可变锁定、删除、权限、数量限制和 tombstone。
-- 原生 Xaero 路径点管理页内的弹性共享操作区、条件队伍按钮、绘制锁图标、删除确认、独立共享集合与本地隐藏。
-- 服务端管理命令、区域授权、审计和紧急禁用开关。
+## Repository layout
 
-`map.sync.server_render.enabled=false` 是默认值。仅诊断或灾难恢复时才可显式设为 `true`，此时服务端会重新启用已加载地形采样。升级不会删除既有 `tiles-v6`；旧版本已经生成并存入服务器的 tile 仍可能继续分发，因为旧格式没有来源字段可安全区分客户端与服务端数据。
+| Path | Purpose |
+| --- | --- |
+| [`src/main/java/.../XaeroMapsync_r.java`](src/main/java/cn/net/rms/xaeromapsync_r/XaeroMapsync_r.java) | Common mod entry point for configuration, server network receivers, and server lifecycle registration. |
+| [`src/main/java/.../XaeroMapsyncClient.java`](src/main/java/cn/net/rms/xaeromapsync_r/XaeroMapsyncClient.java) | Client entry point for Xaero detection, client sync, network receivers, and waypoint UI integration. |
+| `src/main/java/.../client/` | Client Merkle diffing, tile/patch caches, transfer management, atomic application, gap detection, and GUI integration. |
+| `src/main/java/.../server/` | Server lifecycle, scheduling, bandwidth budgets, transfers, gap recovery, regional activity, dirty processing, access control, auditing, and commands. |
+| `src/main/java/.../network/` | Handshake, map, patch, tile, transfer, and waypoint payloads and codecs. |
+| `src/main/java/.../map/` | v6 tile model, hashing, persistent index, patch catalog, Merkle tree, and diagnostic renderer. |
+| `src/main/java/.../waypoint/` | Shared waypoint model, PUBLIC/TEAM visibility, palette validation, and persistence. |
+| `src/main/java/.../xaero/` | Reflective Xaero World Map/Minimap adapters and waypoint bridges. |
+| `src/main/java/.../mixin/` | Server activity signals and injection points for Xaero's native waypoint screens. |
+| `src/main/resources/` | Fabric metadata, mixin configuration, icon, and Chinese/English UI strings. |
+| `src/test/java/` | Tests for maps, networking, clients, servers, permissions, activity, dirty processing, and Xaero adapters. |
+| `docs/` | Atomic map sync, release/rollback, pull request, and three-process local integration documentation. |
+| `scripts/` | PowerShell scripts that prepare and start one server and two isolated clients. |
+| `.github/workflows/` | Gradle build, pinned Xaero JAR verification, and Qodana static analysis. |
+| `xaeromap-origin/` | Git-ignored pinned Xaero JARs used by local integration runs. |
 
-## 安全边界
+## Installation and use
 
-- 不上传世界存档、实体、容器、完整方块 NBT 或无关数据。
-- 私人 Xaero 路径点只有在玩家明确选择并点击共享后才会提交。
-- 所有玩家都不能修改已共享路径点；任何可见该点的玩家确认后都可删除，OP 也可通过服务端命令删除。
-- TEAM 归属由服务器计分板身份决定，不信任客户端提交的创建者或队伍字段。
-- 地图任务只读取主线程上已经加载的 Minecraft 对象。
-- 地图上传只接受已完成握手、维度匹配、可渲染且通过限流的数据；远处归档上传采用 fill-only 合并，服务端已有 tile 优先。
-- Xaero 版本或反射契约不匹配时关闭对应适配器，不写入未知格式。
+Install Fabric Loader, Fabric API, and this mod on the server. Clients that view the shared map or manage shared waypoints also need the pinned Xaero World Map and Xaero Minimap versions.
 
-## 管理命令
+1. Put the built mod JAR in the server and client `mods/` directories.
+2. Start once and review the generated server and client configuration files.
+3. Connect a client and confirm that the protocol handshake succeeds in the logs.
+4. Explore normally. After Xaero finishes rendering, eligible map tiles are uploaded automatically.
 
-命令要求权限等级 2：
+The mod never uploads private waypoints automatically. To share one, select exactly one existing waypoint in Xaero's native waypoint manager and click `Public` or `Team`. A shared waypoint moves into the dedicated `Shared Waypoints` set and displays a lock icon. Delete and recreate it if its contents must change. Any player who can see a shared waypoint may delete it after confirming the action.
+
+## Configuration
+
+The server configuration is generated at `config/xaero-mapsync_r.properties`.
+
+| Group | Important defaults | Purpose |
+| --- | --- | --- |
+| Protocol | `protocol.version=11`, `map.format.version=6` | Compatibility values managed by the current implementation. |
+| Network | `network.compression=zlib`, `network.max_packet_bytes=32768` | Compression, packet size, and per-player/global bandwidth budgets. |
+| Map sync | `map.sync.enabled=true`, `map.sync.shadow_mode=false` | Enables synchronization and optional shadow mode. |
+| Server rendering | `map.sync.server_render.enabled=false` | Accept client Xaero tiles only by default. |
+| Scheduling | `tasks.normal_tick_budget_ms=2`, `tasks.high_load_mspt_threshold=45` | Adapts background work to MSPT and writer queue capacity. |
+| Regional activity | `activity.stable_ticks=200`, `activity.storm_cooldown_ticks=100` | Controls STORM, COOLDOWN, and stable processing timing. |
+| Waypoints | `waypoints.allow_player_upload=true`, `256` per player, `4096` total | Controls sharing and quotas. |
+
+The client configuration is stored at `config/xaero-mapsync_r-client.properties`:
+
+```properties
+mapSyncEnabled=true
+publicWaypointsEnabled=true
+notificationsEnabled=true
+```
+
+## Data and persistence
+
+The server world directory `<world>/xaero-mapsync_r/` contains:
+
+| File or directory | Content |
+| --- | --- |
+| `tiles-v6/` | Atomic `.tile` bodies organized by dimension and chunk coordinates. |
+| `map_patch_index-v6.json` | Tile revisions, content hashes, sampler version, and map index. |
+| `public_waypoints.json` | Active shared waypoints and deletion tombstones. |
+| `explored_chunks.json` | Explored chunk index. |
+| `dirty_chunks.json` | Recoverable dirty work queue. |
+| `region_permissions.json` | Regional team allow, deny, and disable rules. |
+| `access_audit.jsonl` | Append-only audit trail for permission and waypoint operations. |
+
+The client patch cache is stored at `config/xaero-mapsync_r-client-patches-v6/`. Back up both the server world data and client `XaeroWorldMap` data before upgrading or rolling back.
+
+## Administrator commands
+
+All `/sharedmap` commands require permission level 2.
 
 ```text
 /sharedmap status
@@ -73,6 +128,8 @@ Xaero 22.11.1 的路径点颜色是 `0..15` 的调色板索引。服务端加载
 /sharedmap resume
 /sharedmap flush
 /sharedmap bandwidth <bytesPerTick>
+/sharedmap bandwidth player <bytesPerTick>
+/sharedmap bandwidth global <bytesPerTick>
 /sharedmap rebuild-loaded
 /sharedmap region status
 /sharedmap region pause
@@ -91,35 +148,65 @@ Xaero 22.11.1 的路径点颜色是 `0..15` 的调色板索引。服务端加载
 /sharedmap waypoint delete <uuid>
 ```
 
-## 配置与数据
+`rebuild-loaded` generates diagnostic tiles from terrain currently loaded on the server. It is an explicit maintenance action and does not mean that normal synchronization renders server-side maps automatically.
 
-- 服务端配置：`config/xaero-mapsync_r.properties`
-- 客户端配置：`config/xaero-mapsync_r-client.properties`
-- 世界数据：`<world>/xaero-mapsync_r/`
+## Build, test, and local integration
 
-`tasks.dirty_chunk_scan_per_tick` 默认允许检查 4096 个候选区块，按 64 个任务分页领取；渲染数量事故上限为 2048，但正常吞吐由当前/上一 tick 的 MSPT 余量、40ms 事故预算和 writer 队列容量动态截停，并在 45ms 高负载阈值前保留 2ms 余量。瓦片压缩与原子落盘使用 2 至 4 条按坐标有序的 writer；任一可渲染 tile 落盘并发布索引后，其所在的稀疏 patch 即可进入客户端 manifest。
+Windows:
 
-地图 v6 使用服务端 `tiles-v6`、`map_patch_index-v6.json` 和客户端 `xaero-mapsync_r-client-patches-v6` 缓存。本次协议升级不改变存储格式，不重置或删除现有世界、服务端 tile、客户端 Xaero 地图及 `XaeroWaypoints`。发布和回滚步骤见 [`docs/atomic-map-sync-v6.md`](docs/atomic-map-sync-v6.md)。
-
-## 构建与测试
-
-源码兼容 Java 16。当前 Gradle/Loom 需要 Java 21+，Minecraft 1.17.1 的客户端与服务端运行任务则通过 toolchain 固定到 Java 17，避免旧版 LWJGL 在新 JVM 上发生原生崩溃：
-
-```bat
-gradlew.bat clean build
+```powershell
+.\gradlew.bat clean build
 ```
 
-产物位于 `build/libs/`。三进程本地联调步骤见 [`docs/local-integration-test.md`](docs/local-integration-test.md)。
+Linux/macOS:
 
-## 回滚
+```bash
+./gradlew clean build
+```
 
-停止服务端与客户端后回退到兼容现有 v6 存储的旧 Mod JAR。若客户端地图写入异常，再从升级前备份恢复对应 `XaeroWorldMap` 目录；服务端世界、`tiles-v6` 与 `XaeroWaypoints` 无需因本次协议升级回滚。
+Artifacts are written to `build/libs/`. The current test tree contains 51 test source files and 277 JUnit `@Test` cases covering protocol payloads, transfer assembly, compression, Merkle trees, patches, tile storage, client coordination, server scheduling, permissions, activity state, dirty queues, and Xaero reflection adapters.
 
-## 许可协议 / License
+The local end-to-end harness starts one server and two isolated clients:
 
-本项目基于 [MIT License](LICENSE) 开源。
+```powershell
+.\scripts\prepare-local-integration.ps1
+# Review and accept the Minecraft EULA, then set run/server/eula.txt to eula=true
+.\scripts\start-local-integration.ps1
+```
 
-Copyright (c) 2025 RMS
+The server is bound to `127.0.0.1` and uses offline-mode test identities. Never expose it to a network. See [`docs/local-integration-test.md`](docs/local-integration-test.md) for the full acceptance sequence.
 
-本软件按"原样"提供，不提供任何明示或暗示的担保，包括但不限于适销性、特定用途适用性和非侵权的担保。在任何情况下，作者或版权持有人均不对因本软件或其使用产生的任何索赔、损害或其他责任负责。
+CI uses JDK 21 to validate the Gradle Wrapper, download and SHA-256-check the pinned Xaero JARs, run `gradle build`, and execute Qodana JVM static analysis.
 
+## Security boundaries and limitations
+
+- World saves, entities, containers, complete block NBT, and unrelated data are not uploaded.
+- Private waypoints are submitted only after an explicit share action; PRIVATE waypoints cannot be uploaded.
+- TEAM ownership comes from the server scoreboard. Client-supplied creator and team fields are not trusted.
+- Map uploads must pass handshake, dimension, format, renderability, size, and rate-limit validation.
+- Background map work reads only Minecraft objects already loaded on the main thread and does not force-load chunks for synchronization.
+- Shared waypoints are immutable. Deletion does not require creator ownership; the server checks the known revision and the client asks for confirmation before submitting it.
+- The pinned Xaero versions are a compatibility boundary. Upgrading Xaero requires an adapter update and full regression testing.
+- This is an alpha release. Validate it with backups or in staging before a gradual rollout.
+
+## Related documentation
+
+- [`docs/atomic-map-sync-v6.md`](docs/atomic-map-sync-v6.md): protocol v11 / map format v6 lifecycle, observability, release, and rollback.
+- [`docs/local-integration-test.md`](docs/local-integration-test.md): three-process local integration and manual acceptance checklist.
+- [`docs/pr-description.md`](docs/pr-description.md): pull request description for native client tile publication.
+- [`docs/pr-atomic-map-sync-v6.md`](docs/pr-atomic-map-sync-v6.md): pull request description for the gap recovery protocol change.
+
+## Rollback
+
+1. Stop the server and all clients.
+2. Restore an older mod JAR that is compatible with the existing v6 storage.
+3. If client-side Xaero map writes are corrupted, restore the affected `XaeroWorldMap` directory from the pre-upgrade backup.
+4. Do not delete server `tiles-v6/`, `public_waypoints.json`, or other world data unless a confirmed storage incompatibility has a migration plan.
+
+See [`docs/atomic-map-sync-v6.md`](docs/atomic-map-sync-v6.md) for the detailed release and rollback checklist.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+Copyright (c) 2025 CXU

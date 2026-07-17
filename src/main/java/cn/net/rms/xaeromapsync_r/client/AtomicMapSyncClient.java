@@ -26,6 +26,7 @@ public final class AtomicMapSyncClient {
 	private static final int SMALL_PATCH_MAX_SIDE = 2;
 	private static final int SMALL_PATCH_COMMIT_BATCH = 128;
 	private static final long SMALL_PATCH_COMMIT_WINDOW_MILLIS = 2_000L;
+	private static final long GAP_RECOVERY_POLL_INTERVAL_MILLIS = 250L;
 	private static final int MANIFEST_POLL_TICKS = 100;
 	private static final int SUMMARY_TICKS = 200;
 	private static final long PATCH_REQUEST_TIMEOUT_MILLIS = 15_000L;
@@ -49,6 +50,7 @@ public final class AtomicMapSyncClient {
 	private final Map<MapPatchKey, MapPatch> verifiedWavePatches = new LinkedHashMap<>();
 	private final Map<MapPatchKey, MapPatch> verifiedSmallPatches = new LinkedHashMap<>();
 	private long smallPatchWindowStartedMillis = -1L;
+	private long nextGapRecoveryPollMillis;
 	private boolean connected;
 	private long syncId;
 	private long epoch;
@@ -93,12 +95,15 @@ public final class AtomicMapSyncClient {
 			long nowMillis = System.currentTimeMillis();
 			expirePatchRequests(nowMillis);
 			pumpPatchRequests();
-			List<cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry> recovery = gapDetector.poll(nowMillis, 2,
-					cache::appliedRevision);
-			if (!recovery.isEmpty()) {
-				SharedMapNetworking.requestGapRecovery(recovery);
-				XaeroMapsync_r.LOGGER.info("map_sync event=gap_recovery_requested tiles={} delay_ms={}",
-						recovery.size(), MapGapDetector.DETECTION_DELAY_MILLIS);
+			if (shouldPollGapRecovery(nowMillis, nextGapRecoveryPollMillis)) {
+				nextGapRecoveryPollMillis = nowMillis + GAP_RECOVERY_POLL_INTERVAL_MILLIS;
+				List<cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry> recovery = gapDetector.poll(nowMillis, 2,
+						cache::appliedRevision);
+				if (!recovery.isEmpty()) {
+					SharedMapNetworking.requestGapRecovery(recovery);
+					XaeroMapsync_r.LOGGER.info("map_sync event=gap_recovery_requested tiles={} delay_ms={}",
+							recovery.size(), MapGapDetector.DETECTION_DELAY_MILLIS);
+				}
 			}
 			if (shouldFlushSmallWave(verifiedSmallPatches.size(), smallPatchWindowStartedMillis, nowMillis))
 				flushVerifiedSmallWave();
@@ -321,6 +326,7 @@ public final class AtomicMapSyncClient {
 				Math.max(0L, System.currentTimeMillis() - smallPatchWindowStartedMillis));
 		verifiedSmallPatches.clear();
 		smallPatchWindowStartedMillis = -1L;
+		nextGapRecoveryPollMillis = 0L;
 	}
 
 	private void expirePatchRequests(long nowMillis) {
@@ -485,6 +491,9 @@ public final class AtomicMapSyncClient {
 			int pendingCommits) {
 		return ticks % MANIFEST_POLL_TICKS == 0 && queuedRequests == 0 && requestsInFlight == 0
 				&& verifiedWavePatches == 0 && pendingCommits == 0;
+	}
+	static boolean shouldPollGapRecovery(long nowMillis, long nextPollMillis) {
+		return nowMillis >= nextPollMillis;
 	}
 	static boolean shouldDownloadManifest(Long appliedHash, long contentHash, boolean commitPending,
 			boolean requestInFlight, boolean requestQueued) {

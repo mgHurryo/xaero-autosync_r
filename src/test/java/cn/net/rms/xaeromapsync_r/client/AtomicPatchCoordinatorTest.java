@@ -313,6 +313,13 @@ class AtomicPatchCoordinatorTest {
 	}
 
 	@Test
+	void gapRecoveryPollingMatchesTheServerFourBatchPerSecondLimit() {
+		assertTrue(AtomicMapSyncClient.shouldPollGapRecovery(1_000L, 1_000L));
+		assertFalse(AtomicMapSyncClient.shouldPollGapRecovery(1_249L, 1_250L));
+		assertTrue(AtomicMapSyncClient.shouldPollGapRecovery(1_250L, 1_250L));
+	}
+
+	@Test
 	void localGenerationRechecksUseBoundedBackoff() {
 		FakeAdapter adapter = new FakeAdapter();
 		adapter.generatingTiles = ignored -> true;

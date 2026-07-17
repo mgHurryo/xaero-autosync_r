@@ -78,8 +78,9 @@ public final class AtomicMapSyncClient {
 			}
 			expirePatchRequests(System.currentTimeMillis());
 			pumpPatchRequests();
-			if (++ticks % MANIFEST_POLL_TICKS == 0 && inFlight.isEmpty() && requestQueue.isEmpty()
-					&& coordinator.pendingCount() == 0) beginManifestSync();
+			if (shouldPollManifest(++ticks, requestQueue.size(), inFlight.size())) {
+				beginManifestSync();
+			}
 			if (ticks % SUMMARY_TICKS == 0) logSummary();
 		} finally {
 			recordTickDuration(System.nanoTime() - started);
@@ -92,7 +93,8 @@ public final class AtomicMapSyncClient {
 			return;
 		}
 		if (manifestCursor > 0 && page.epoch() != epoch) {
-			XaeroMapsync_r.LOGGER.info("map_sync event=epoch_changed old_epoch={} new_epoch={} action=restart", epoch, page.epoch());
+			XaeroMapsync_r.LOGGER.info("map_sync event=epoch_changed old_epoch={} new_epoch={} action=restart",
+					Long.toUnsignedString(epoch), Long.toUnsignedString(page.epoch()));
 			beginManifestSync();
 			return;
 		}
@@ -102,15 +104,18 @@ public final class AtomicMapSyncClient {
 		int queued = 0;
 		for (MapPatchManifest manifest : page.manifests()) {
 			if (manifest.epoch() != epoch || !manifest.key().dimension().equals(currentDimension())) continue;
-			if (appliedHashes.getOrDefault(manifest.key(), Long.MIN_VALUE) == manifest.contentHash()) continue;
-			if (inFlight.containsKey(manifest.key()) || !queuedKeys.add(manifest.key())) continue;
+			if (!shouldDownloadManifest(appliedHashes.get(manifest.key()), manifest.contentHash(),
+					coordinator.hasPending(manifest.key()), inFlight.containsKey(manifest.key()),
+					queuedKeys.contains(manifest.key()))) continue;
+			queuedKeys.add(manifest.key());
 			requestQueue.addLast(manifest);
 			queued++;
 		}
 		lastProgressMillis = System.currentTimeMillis();
 		XaeroMapsync_r.LOGGER.info(
 				"map_sync event=manifest_page sync_id={} epoch={} cursor={} total={} received={} queued={} in_flight={} pending_commits={}",
-				syncId, epoch, manifestCursor, manifestTotal, page.manifests().size(), queued, inFlight.size(), coordinator.pendingCount());
+				syncId, Long.toUnsignedString(epoch), manifestCursor, manifestTotal, page.manifests().size(), queued,
+				inFlight.size(), coordinator.pendingCount());
 		pumpPatchRequests();
 		if (!page.complete()) requestManifestPage();
 	}
@@ -124,7 +129,7 @@ public final class AtomicMapSyncClient {
 			rejectedPatches++;
 			XaeroMapsync_r.LOGGER.warn(
 					"map_sync event=patch_rejected patch_id={} epoch={} reason=unexpected_manifest in_flight={}",
-					patch.manifest().key().stableId(), patch.manifest().epoch(), inFlight.size());
+					patch.manifest().key().stableId(), Long.toUnsignedString(patch.manifest().epoch()), inFlight.size());
 			pumpPatchRequests();
 			return;
 		}
@@ -147,7 +152,7 @@ public final class AtomicMapSyncClient {
 			scheduleRetry(manifest, System.currentTimeMillis());
 		}
 		XaeroMapsync_r.LOGGER.warn("map_sync event=patch_unavailable patch_id={} epoch={} reason={} retries={}",
-				unavailable.key().stableId(), epoch, unavailable.reason(), retries);
+				unavailable.key().stableId(), Long.toUnsignedString(epoch), unavailable.reason(), retries);
 		pumpPatchRequests();
 	}
 
@@ -255,21 +260,31 @@ public final class AtomicMapSyncClient {
 			rejectedPatches++;
 			resyncRequested = true;
 		}
+		if ("local-generation-timeout".equals(transition.reason())) {
+			XaeroMapsync_r.LOGGER.info(
+					"map_sync event=local_generation_timeout patch_id={} region={} {} epoch={} patch_hash={} action=force_remote_commit",
+					transition.key().stableId(), transition.key().xaeroRegionX(), transition.key().xaeroRegionZ(),
+					Long.toUnsignedString(transition.epoch()), Long.toUnsignedString(transition.patchHash()));
+		}
 		XaeroMapsync_r.LOGGER.debug(
 				"map_sync event=phase patch_id={} region={} {} epoch={} patch_hash={} phase={} next_phase={} attempts={} reason={} queue={} active_regions={}",
 				transition.key().stableId(), transition.key().xaeroRegionX(), transition.key().xaeroRegionZ(),
-				transition.epoch(), Long.toUnsignedString(transition.patchHash()), transition.previous(), transition.next(),
+				Long.toUnsignedString(transition.epoch()), Long.toUnsignedString(transition.patchHash()), transition.previous(), transition.next(),
 				transition.attempts(), transition.reason(), coordinator.pendingCount(), coordinator.activeRegionCount());
 	}
 
 	private void logSummary() {
+		long nowMillis = System.currentTimeMillis();
+		AtomicPatchCoordinator.Statistics statistics = coordinator.statistics(nowMillis);
 		XaeroMapsync_r.LOGGER.info(
-				"map_sync event=summary sync_id={} epoch={} manifest_cursor={} manifest_total={} request_queue={} in_flight={} commit_queue={} active_regions={} applied_patches={} rejected_patches={} retries={} tick_p95_ms={} tick_max_ms={} idle_ms={}",
-				syncId, epoch, manifestCursor, manifestTotal, requestQueue.size(), inFlight.size(), coordinator.pendingCount(),
-				coordinator.activeRegionCount(), appliedPatches, rejectedPatches, retries,
+				"map_sync event=summary sync_id={} epoch={} manifest_cursor={} manifest_total={} request_queue={} in_flight={} commit_queue={} active_regions={} local_waiting={} oldest_local_wait_ms={} forced_remote_commits={} local_rechecks={} phases={} applied_patches={} rejected_patches={} retries={} tick_p95_ms={} tick_max_ms={} idle_ms={}",
+				syncId, Long.toUnsignedString(epoch), manifestCursor, manifestTotal, requestQueue.size(), inFlight.size(),
+				statistics.pending(), statistics.activeRegions(), statistics.localWaiting(), statistics.oldestLocalWaitMillis(),
+				statistics.forcedRemoteCommits(), statistics.localGenerationRechecks(), statistics.phaseCounts(),
+				appliedPatches, rejectedPatches, retries,
 				String.format(java.util.Locale.ROOT, "%.3f", p95TickMillis()),
 				String.format(java.util.Locale.ROOT, "%.3f", maxTickMillis()),
-				System.currentTimeMillis() - lastProgressMillis);
+				nowMillis - lastProgressMillis);
 	}
 
 	private void recordTickDuration(long duration) {
@@ -319,6 +334,14 @@ public final class AtomicMapSyncClient {
 	}
 
 	private static long incrementNonZero(long value) { return value == Long.MAX_VALUE ? 1L : value + 1L; }
+	static boolean shouldPollManifest(int ticks, int queuedRequests, int requestsInFlight) {
+		return ticks % MANIFEST_POLL_TICKS == 0 && queuedRequests == 0 && requestsInFlight == 0;
+	}
+	static boolean shouldDownloadManifest(Long appliedHash, long contentHash, boolean commitPending,
+			boolean requestInFlight, boolean requestQueued) {
+		return (appliedHash == null || appliedHash.longValue() != contentHash)
+				&& !commitPending && !requestInFlight && !requestQueued;
+	}
 	private static String currentDimension() {
 		Minecraft minecraft = Minecraft.getInstance();
 		return minecraft.level == null ? null : minecraft.level.dimension().location().toString();

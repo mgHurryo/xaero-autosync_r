@@ -61,6 +61,15 @@ final class ReflectiveXaeroMapAdapterTest {
 	}
 
 	@Test
+	void allAirLocalSnapshotsAreRejectedAsXaeroPlaceholders() {
+		assertFalse(ReflectiveXaeroMapAdapter.isUsableLocalSnapshot(allAirTile(256)));
+
+		int[] baseStateIds = new int[256];
+		baseStateIds[17] = 1;
+		assertTrue(ReflectiveXaeroMapAdapter.isUsableLocalSnapshot(tile(256, baseStateIds)));
+	}
+
+	@Test
 	void pinnedXaeroJarStoresLastSaveTimeAsLongField() throws IOException {
 		ClassSignature signature = readClassSignature("xaero/map/region/LeveledRegion.class");
 
@@ -77,6 +86,7 @@ final class ReflectiveXaeroMapAdapterTest {
 		ClassSignature signature = readClassSignature("xaero/map/MapProcessor.class");
 		ClassSignature saveLoad = readClassSignature("xaero/map/file/MapSaveLoad.class");
 		ClassSignature region = readClassSignature("xaero/map/region/MapRegion.class");
+		ClassSignature leveledRegion = readClassSignature("xaero/map/region/LeveledRegion.class");
 
 		assertEquals("(Ljava/lang/Runnable;)V", signature.methodDescriptor("waitForLoadingToFinish"));
 		assertEquals("(II)Lxaero/map/region/MapTile;", signature.methodDescriptor("getMapTile"));
@@ -85,10 +95,12 @@ final class ReflectiveXaeroMapAdapterTest {
 		assertEquals("Ljava/util/ArrayList;", saveLoad.fieldDescriptor("toLoad"));
 		assertEquals("(Lxaero/map/region/LeveledRegion;)Z", saveLoad.methodDescriptor("toCacheContains"));
 		assertEquals("(Lxaero/map/region/LeveledRegion;)V", saveLoad.methodDescriptor("requestCache"));
+		assertEquals("()Z", leveledRegion.methodDescriptor("shouldCache"));
+		assertEquals("(ZLjava/lang/String;)V", leveledRegion.methodDescriptor("setShouldCache"));
+		assertEquals("()Z", leveledRegion.methodDescriptor("recacheHasBeenRequested"));
+		assertEquals("(ZLjava/lang/String;)V", leveledRegion.methodDescriptor("setRecacheHasBeenRequested"));
 		assertEquals("()Z", region.methodDescriptor("isWritingPaused"));
 		assertEquals("Ljava/lang/Object;", region.fieldDescriptor("writerThreadPauseSync"));
-		ClassSignature leveledRegion = readClassSignature("xaero/map/region/LeveledRegion.class");
-		assertEquals("()Z", leveledRegion.methodDescriptor("recacheHasBeenRequested"));
 		ClassSignature tile = readClassSignature("xaero/map/region/MapTile.class");
 		assertEquals("()Z", tile.methodDescriptor("isLoaded"));
 		assertEquals("()Z", tile.methodDescriptor("wasWrittenOnce"));
@@ -253,7 +265,19 @@ final class ReflectiveXaeroMapAdapterTest {
 	}
 
 	private static MapTile tile(int size) {
+		int[] baseStateIds = new int[size];
+		if (size > 0) {
+			baseStateIds[0] = 1;
+		}
+		return tile(size, baseStateIds);
+	}
+
+	private static MapTile allAirTile(int size) {
 		return new MapTile("minecraft:overworld", -1, -5, new int[size], new int[size], new int[size], new int[size], 1L);
+	}
+
+	private static MapTile tile(int size, int[] baseStateIds) {
+		return new MapTile("minecraft:overworld", -1, -5, new int[size], baseStateIds, new int[size], new int[size], 1L);
 	}
 
 	private static ClassSignature readClassSignature(String classEntry) throws IOException {

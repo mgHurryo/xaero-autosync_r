@@ -8,7 +8,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 final class LocalTileReadyHintLimiter {
-	static final int DEFAULT_MAX_HINTS_PER_WINDOW = 8192;
+	static final int DEFAULT_MAX_HINTS_PER_WINDOW = 16_384;
 	static final long DEFAULT_WINDOW_MILLIS = 10_000L;
 	static final long DEFAULT_DUPLICATE_COOLDOWN_MILLIS = 1_000L;
 	private static final int MAX_RECENT_HINTS_PER_PLAYER = 16_384;

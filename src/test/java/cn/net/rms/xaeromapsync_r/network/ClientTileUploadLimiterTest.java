@@ -12,8 +12,8 @@ final class ClientTileUploadLimiterTest {
 
 	@Test
 	void defaultUploadWindowSupportsElytraScaleClientTileBursts() {
-		assertEquals(8192, ClientTileUploadLimiter.DEFAULT_PACKETS_PER_WINDOW);
-		assertEquals(128L * 1024L * 1024L, ClientTileUploadLimiter.DEFAULT_BYTES_PER_WINDOW);
+		assertEquals(16_384, ClientTileUploadLimiter.DEFAULT_PACKETS_PER_WINDOW);
+		assertEquals(256L * 1024L * 1024L, ClientTileUploadLimiter.DEFAULT_BYTES_PER_WINDOW);
 	}
 
 	@Test

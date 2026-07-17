@@ -140,6 +140,9 @@ public final class MapTaskScheduler {
 		if (tile == null) {
 			return false;
 		}
+		if (!tile.hasRenderableSurface()) {
+			return false;
+		}
 		byte[] surfacePayload;
 		try {
 			surfacePayload = CompressionCodec.encodeSurface(CompressionCodec.MapTileSurfaceData.fromTile(tile),

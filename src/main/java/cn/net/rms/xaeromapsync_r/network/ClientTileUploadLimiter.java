@@ -6,8 +6,8 @@ import java.util.UUID;
 
 /** Bounds compressed upload work before a tile is decoded on the network thread. */
 final class ClientTileUploadLimiter {
-	static final int DEFAULT_PACKETS_PER_WINDOW = 8192;
-	static final long DEFAULT_BYTES_PER_WINDOW = 128L * 1024L * 1024L;
+	static final int DEFAULT_PACKETS_PER_WINDOW = 16_384;
+	static final long DEFAULT_BYTES_PER_WINDOW = 256L * 1024L * 1024L;
 	static final long DEFAULT_WINDOW_MILLIS = 10_000L;
 	private final int maxPackets;
 	private final long maxBytes;

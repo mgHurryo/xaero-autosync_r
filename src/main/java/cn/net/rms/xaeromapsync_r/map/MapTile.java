@@ -81,6 +81,16 @@ public final class MapTile {
 	public List<Overlay> overlaysAt(int column) { return overlays.get(column); }
 	public long contentHash() { return contentHash; }
 
+	public boolean hasRenderableSurface() {
+		for (int stateId : baseStateIds) {
+			if (stateId != 0) return true;
+		}
+		for (List<Overlay> column : overlays) {
+			if (!column.isEmpty()) return true;
+		}
+		return false;
+	}
+
 	/** Compatibility alias for the pre-v2 surface model. */
 	public int[] heights() { return baseHeights(); }
 

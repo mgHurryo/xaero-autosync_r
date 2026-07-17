@@ -77,13 +77,39 @@ final class ClientMapTileCacheTest {
 		restarted.stop();
 	}
 
+	@Test
+	void unrenderablePlaceholderTilesAreNotCached() throws Exception {
+		MapTile placeholder = allAirTile("minecraft:overworld", 12, 13);
+		MapTileIndexEntry entry = new MapTileIndexEntry(placeholder.dimension(), placeholder.chunkX(),
+				placeholder.chunkZ(), placeholder.contentHash(), 5L, 0L);
+		ClientMapTileCache cache = new ClientMapTileCache();
+		cache.start(tempDirectory.resolve("placeholder-tiles"));
+
+		cache.cache(placeholder, entry.revision());
+
+		assertTrue(cache.findCached(entry).get().isEmpty());
+		cache.stop();
+	}
+
 	private static MapTile tile(String dimension, int x, int z) {
 		return tile(dimension, x, z, 0);
 	}
 
 	private static MapTile tile(String dimension, int x, int z, int offset) {
+		int[] baseStates = new int[256];
+		java.util.Arrays.fill(baseStates, offset + 1);
 		int[] values = new int[256];
 		java.util.Arrays.fill(values, offset);
+		byte[] lights = new byte[256];
+		boolean[] flags = new boolean[256];
+		List<List<MapTile.Overlay>> overlays = new ArrayList<>(256);
+		for (int index = 0; index < 256; index++) overlays.add(List.of());
+		long hash = MapTileHasher.hashSurface(baseStates, values, values, values, lights, flags, flags, overlays);
+		return new MapTile(dimension, x, z, baseStates, values, values, values, lights, flags, flags, overlays, hash);
+	}
+
+	private static MapTile allAirTile(String dimension, int x, int z) {
+		int[] values = new int[256];
 		byte[] lights = new byte[256];
 		boolean[] flags = new boolean[256];
 		List<List<MapTile.Overlay>> overlays = new ArrayList<>(256);

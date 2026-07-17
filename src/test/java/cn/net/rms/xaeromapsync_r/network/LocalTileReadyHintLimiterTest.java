@@ -10,7 +10,7 @@ final class LocalTileReadyHintLimiterTest {
 
 	@Test
 	void defaultHintWindowSupportsElytraScaleLocalTileDiscovery() {
-		assertEquals(8192, LocalTileReadyHintLimiter.DEFAULT_MAX_HINTS_PER_WINDOW);
+		assertEquals(16_384, LocalTileReadyHintLimiter.DEFAULT_MAX_HINTS_PER_WINDOW);
 		assertEquals(1_000L, LocalTileReadyHintLimiter.DEFAULT_DUPLICATE_COOLDOWN_MILLIS);
 	}
 

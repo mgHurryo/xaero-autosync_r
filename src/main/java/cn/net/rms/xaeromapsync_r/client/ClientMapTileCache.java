@@ -54,6 +54,11 @@ public final class ClientMapTileCache {
 	}
 
 	public void cache(MapTile tile, long revision) {
+		if (!tile.hasRenderableSurface()) {
+			XaeroMapsync_r.LOGGER.warn("Rejected unrenderable client map tile cache body {} {} {} revision={}",
+					tile.dimension(), tile.chunkX(), tile.chunkZ(), revision);
+			return;
+		}
 		String key = key(tile.dimension(), tile.chunkX(), tile.chunkZ());
 		synchronized (this) {
 			long cachedRevision = cachedRevisions.getOrDefault(key, -1L);
@@ -105,7 +110,8 @@ public final class ClientMapTileCache {
 		if (activeReaders == null) return CompletableFuture.completedFuture(Optional.empty());
 		return CompletableFuture.supplyAsync(() -> {
 			Optional<MapTile> cached = tileBodies.find(entry.dimension(), entry.chunkX(), entry.chunkZ())
-					.filter(tile -> tile.contentHash() == entry.contentHash());
+					.filter(tile -> tile.contentHash() == entry.contentHash())
+					.filter(MapTile::hasRenderableSurface);
 			cached.ifPresent(tile -> {
 				synchronized (ClientMapTileCache.this) {
 					cachedHashes.put(key(tile.dimension(), tile.chunkX(), tile.chunkZ()), tile.contentHash());
@@ -126,6 +132,10 @@ public final class ClientMapTileCache {
 
 	public synchronized int totalCount() {
 		return appliedRevisions.size();
+	}
+
+	public synchronized int pendingWriteCount() {
+		return pendingWrites.size();
 	}
 
 	public void stop() {

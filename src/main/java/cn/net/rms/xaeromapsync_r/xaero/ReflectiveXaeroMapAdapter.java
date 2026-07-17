@@ -116,7 +116,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 	public Optional<MapTile> localTile(String dimension, int chunkX, int chunkZ) {
 		if (!available) return Optional.empty();
 		try {
-			return runtime.localTile(dimension, chunkX, chunkZ);
+			return runtime.localTile(dimension, chunkX, chunkZ).filter(ReflectiveXaeroMapAdapter::isUsableLocalSnapshot);
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
 			if (isNotReady(exception)) return Optional.empty();
 			available = false;
@@ -156,6 +156,10 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 
 	static boolean isCurrentDimension(String tileDimension, String currentDimension) {
 		return Objects.equals(tileDimension, currentDimension);
+	}
+
+	static boolean isUsableLocalSnapshot(MapTile tile) {
+		return tile.hasRenderableSurface();
 	}
 
 	private static void validateTile(MapTile tile) {
@@ -274,8 +278,11 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Field biomeKeyManagerField;
 		private final Method biomeKeyGet;
 		private final Method requestLoad;
+		private final Method shouldCache;
 		private final Method reloadHasBeenRequested;
 		private final Method recacheHasBeenRequested;
+		private final Method setRecacheHasBeenRequested;
+		private final Method setShouldCache;
 		private final Field toLoadField;
 		private final Method toCacheContains;
 		private final Method removeToCache;
@@ -360,8 +367,11 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			biomeKeyManagerField = field(mapSaveLoadClass, "biomeKeyManager", biomeKeyManagerClass);
 			biomeKeyGet = method(biomeKeyManagerClass, biomeKeyClass, "get", String.class);
 			requestLoad = method(mapSaveLoadClass, "requestLoad", mapRegionClass, String.class);
+			shouldCache = method(leveledRegionClass, "shouldCache");
 			reloadHasBeenRequested = method(leveledRegionClass, "reloadHasBeenRequested");
 			recacheHasBeenRequested = method(leveledRegionClass, "recacheHasBeenRequested");
+			setRecacheHasBeenRequested = method(leveledRegionClass, "setRecacheHasBeenRequested", boolean.class, String.class);
+			setShouldCache = method(leveledRegionClass, "setShouldCache", boolean.class, String.class);
 			toLoadField = field(mapSaveLoadClass, "toLoad", java.util.ArrayList.class);
 			toCacheContains = method(mapSaveLoadClass, "toCacheContains", leveledRegionClass);
 			removeToCache = method(mapSaveLoadClass, "removeToCache", leveledRegionClass);
@@ -388,7 +398,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			Object xaeroTile = invoke(getMapTile, processor, chunkX, chunkZ);
 			if (xaeroTile != null && (Boolean) invoke(isTileLoaded, xaeroTile)
 					&& (Boolean) invoke(wasTileWrittenOnce, xaeroTile)
-					&& hasCompleteTileData(xaeroTile)) {
+					&& hasRenderableTileData(xaeroTile)) {
 				return LocalTileState.READY;
 			}
 			LevelChunk chunk = minecraft.level.getChunkSource().getChunkNow(chunkX, chunkZ);
@@ -447,6 +457,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					Object xaeroTile = invoke(getTile, chunk, Math.floorMod(chunkX, 4), Math.floorMod(chunkZ, 4));
 					if (xaeroTile == null || !(Boolean) invoke(isTileLoaded, xaeroTile)
 							|| !(Boolean) invoke(wasTileWrittenOnce, xaeroTile)) return null;
+					if (!hasRenderableTileData(xaeroTile)) return null;
 
 					return snapshotTile(dimension, chunkX, chunkZ, xaeroTile, minecraft);
 				}
@@ -462,16 +473,19 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			return processor == null || isCurrentDimension(dimension, (String) invoke(getCurrentDimension, processor));
 		}
 
-		private boolean hasCompleteTileData(Object xaeroTile) throws ReflectiveOperationException {
+		private boolean hasRenderableTileData(Object xaeroTile) throws ReflectiveOperationException {
+			boolean hasSurfaceBlock = false;
 			for (int localZ = 0; localZ < TILE_SIDE; localZ++) {
 				for (int localX = 0; localX < TILE_SIDE; localX++) {
 					Object block = invoke(getMapBlock, xaeroTile, localX, localZ);
-					if (block == null || invoke(getPixelState, block) == null || invoke(getBlockBiome, block) == null) {
+					Object state = block == null ? null : invoke(getPixelState, block);
+					if (state == null || invoke(getBlockBiome, block) == null) {
 						return false;
 					}
+					hasSurfaceBlock |= !((BlockState) state).isAir();
 				}
 			}
-			return true;
+			return hasSurfaceBlock;
 		}
 
 		private MapTile snapshotTile(String dimension, int chunkX, int chunkZ, Object xaeroTile,
@@ -681,6 +695,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			boolean originalBeingWritten = (Boolean) invoke(isBeingWritten, region);
 			boolean originalRefreshing = (Boolean) invoke(isRefreshing, region);
 			boolean originalRegionTerrain = regionHasHadTerrainField.getBoolean(region);
+			boolean originalShouldCache = (Boolean) invoke(shouldCache, region);
+			boolean originalRecacheRequested = (Boolean) invoke(recacheHasBeenRequested, region);
 			boolean removedNativeCacheRequest = false;
 			List<Object> toSave = (List<Object>) invoke(getToSave, saveLoad);
 			if (toSave.contains(region)) {
@@ -702,9 +718,12 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 
 			try {
 				if ((Boolean) invoke(toCacheContains, saveLoad, region)) {
-					// This queued cache predates the incoming tile. Cancel it before preCache()
-					// acquires the writer pause; refresh queues a replacement after rebuilding.
+					// This queued cache predates the incoming tile. Cancel both the queue
+					// entry and the region's cache intent before preCache() can save stale
+					// prepared flags; refresh queues a replacement after rebuilding.
 					invoke(removeToCache, saveLoad, region);
+					invoke(setShouldCache, region, false, "shared map sync mutation");
+					invoke(setRecacheHasBeenRequested, region, false, "shared map sync mutation");
 					removedNativeCacheRequest = true;
 				}
 				List<Object> xaeroTiles = new ArrayList<>(sources.size());
@@ -767,6 +786,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					regionHasHadTerrainField.setBoolean(region, originalRegionTerrain);
 					invoke(setBeingWritten, region, originalBeingWritten);
 					if (removedNativeCacheRequest && !(Boolean) invoke(toCacheContains, saveLoad, region)) {
+						invoke(setShouldCache, region, originalShouldCache, "shared map sync rollback");
+						invoke(setRecacheHasBeenRequested, region, originalRecacheRequested, "shared map sync rollback");
 						invoke(requestCache, saveLoad, region);
 					}
 				} catch (ReflectiveOperationException | RuntimeException | LinkageError rollbackException) {

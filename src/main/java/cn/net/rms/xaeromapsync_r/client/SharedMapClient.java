@@ -69,12 +69,12 @@ public final class SharedMapClient {
 	private static final long TILE_APPLY_BUDGET_NANOS = 25_000_000L;
 	private static final long TILE_APPLY_RETRY_MILLIS = 250L;
 	private static final long MAX_TILE_APPLY_RETRY_MILLIS = 5_000L;
-	private static final long LOCAL_TILE_SCAN_COOLDOWN_MILLIS = 250L;
+	private static final long LOCAL_TILE_SCAN_COOLDOWN_MILLIS = 100L;
 	private static final long LOCAL_TILE_HINT_COOLDOWN_MILLIS = 2_000L;
-	private static final int LOCAL_TILE_UPLOAD_RADIUS = 24;
-	private static final int MAX_LOCAL_TILE_UPLOADS_PER_SCAN = 512;
+	private static final int LOCAL_TILE_UPLOAD_RADIUS = 48;
+	private static final int MAX_LOCAL_TILE_UPLOADS_PER_SCAN = 1536;
 	private static final int LOCAL_TILE_UPLOAD_SCAN_INTERVAL_TICKS = 1;
-	private static final long LOCAL_TILE_UPLOAD_BUDGET_NANOS = 25_000_000L;
+	private static final long LOCAL_TILE_UPLOAD_BUDGET_NANOS = 35_000_000L;
 	private static int tileRequestsInFlight;
 	private static int tileCacheLookupsInFlight;
 	private static boolean handlingTileDataBatch;
@@ -184,6 +184,17 @@ public final class SharedMapClient {
 		if (!SharedMapClientConfig.get().mapSyncEnabled()) return;
 		if (!payload.tile().dimension().equals(currentDimension())) return;
 		String key = tileKey(payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ());
+		if (!payload.tile().hasRenderableSurface()) {
+			Long requestedRevision = IN_FLIGHT_TILE_REQUESTS.remove(key);
+			if (requestedRevision != null) tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
+			removeQueuedRevisionAtMost(key, payload.revision());
+			mapSyncIncomplete = true;
+			retryMapSyncAtMillis = System.currentTimeMillis() + 5_000L;
+			XaeroMapsync_r.LOGGER.warn("Rejected unrenderable received map tile {} {} {} revision={}",
+					payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ(), payload.revision());
+			pumpTileRequests();
+			return;
+		}
 		TILE_DATA.cache(payload.tile(), payload.revision());
 		Long requestedRevision = IN_FLIGHT_TILE_REQUESTS.get(key);
 		if (requestedRevision != null && payload.revision() >= requestedRevision) {
@@ -789,7 +800,8 @@ public final class SharedMapClient {
 	private static void markRootCompleteIfIdle() {
 		if (canCompleteMapRoot(mapSyncIncomplete, mapNodeRequestsInFlight, MAP_NODE_QUEUE.size(),
 				tileCacheLookupsInFlight, TILE_CACHE_LOOKUP_QUEUE.size(), tileRequestsInFlight,
-				TILE_REQUEST_QUEUE.size(), TILE_APPLY_QUEUE.size(), QUEUED_TILE_REVISIONS.size())
+				TILE_REQUEST_QUEUE.size(), TILE_APPLY_QUEUE.size(), QUEUED_TILE_REVISIONS.size(),
+				TILE_DATA.pendingWriteCount())
 				&& syncingDimension != null && MAP_TILES.matchesRootHash(syncingDimension, syncingRootHash)
 				&& COMPLETED_MAP_ROOTS.getOrDefault(syncingDimension, 0L) != MAP_TILES.rootHash()) {
 			COMPLETED_MAP_ROOTS.put(syncingDimension, MAP_TILES.rootHash());
@@ -800,10 +812,10 @@ public final class SharedMapClient {
 
 	static boolean canCompleteMapRoot(boolean incomplete, int nodeRequests, int queuedNodes,
 			int cacheLookups, int queuedCacheLookups, int tileRequests, int queuedTiles, int pendingApplies,
-			int targetRevisions) {
+			int targetRevisions, int pendingCacheWrites) {
 		return !incomplete && nodeRequests == 0 && queuedNodes == 0 && cacheLookups == 0
 				&& queuedCacheLookups == 0 && tileRequests == 0 && queuedTiles == 0 && pendingApplies == 0
-				&& targetRevisions == 0;
+				&& targetRevisions == 0 && pendingCacheWrites == 0;
 	}
 
 	private static String currentDimension() {

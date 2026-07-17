@@ -268,7 +268,7 @@ public final class MapTileDataStore {
 							long modifiedAtMillis = Files.getLastModifiedTime(tilePath).toMillis();
 							if (!shouldReadForRecovery(previous, modifiedAtMillis)) continue;
 							Optional<MapTile> tile = find(dimension, chunkX, chunkZ);
-							if (tile.isPresent()) {
+							if (tile.isPresent() && tile.get().hasRenderableSurface()) {
 								if (previous.isEmpty() || previous.get().contentHash() != tile.get().contentHash()) recovered++;
 								index.upsert(tile.get());
 							}

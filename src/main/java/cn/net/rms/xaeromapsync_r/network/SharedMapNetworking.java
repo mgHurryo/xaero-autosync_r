@@ -61,7 +61,7 @@ public final class SharedMapNetworking {
 	private static final int TRANSFER_TYPE_MAP_NODE_RESPONSE = 1;
 	private static final int TRANSFER_TYPE_TILE_DATA = 2;
 	private static final int TRANSFER_TYPE_TILE_DATA_BATCH = 3;
-	private static final int LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS = 32;
+	private static final int LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS = 64;
 	private static final LocalTileReadyHintLimiter LOCAL_TILE_HINT_LIMITER = new LocalTileReadyHintLimiter();
 	private static final ClientTileUploadLimiter CLIENT_TILE_UPLOAD_LIMITER = new ClientTileUploadLimiter();
 	private static final AtomicInteger TILE_BATCH_WORKER_IDS = new AtomicInteger();
@@ -444,6 +444,10 @@ public final class SharedMapNetworking {
 	private static void handleLocalTileData(net.minecraft.server.level.ServerPlayer player, TileDataPayload upload) {
 		MapTile tile = upload.tile();
 		if (!SharedMapConfig.compression().equals(upload.compression())) return;
+		if (!tile.hasRenderableSurface()) {
+			SharedMapServer.dirtyChunks().prioritizeDiscovered(tile.dimension(), tile.chunkX(), tile.chunkZ());
+			return;
+		}
 		LocalTileReadyPayload hint = new LocalTileReadyPayload(tile.dimension(), tile.chunkX(), tile.chunkZ(),
 				tile.contentHash());
 		if (LOCAL_TILE_HINT_LIMITER.acquire(player.getUUID(), hint, System.currentTimeMillis())
@@ -516,13 +520,15 @@ public final class SharedMapNetworking {
 	private static void sendTileDataIfAvailable(net.minecraft.server.level.ServerPlayer player, TileRequestPayload request) {
 		MapTile tile = SharedMapServer.tileData().find(request.dimension(), request.chunkX(), request.chunkZ()).orElse(null);
 		byte[] preparedSurfacePayload = null;
-		if (tile == null) {
+		if (tile == null || !tile.hasRenderableSurface()) {
 			if (!SharedMapServer.exploredChunks().isExplored(request.dimension(), request.chunkX(), request.chunkZ())) {
 				sendTileUnavailable(player, request, "Tile is not explored");
 				return;
 			}
 			SharedMapServer.dirtyChunks().prioritizeDiscovered(request.dimension(), request.chunkX(), request.chunkZ());
-			sendTileUnavailable(player, request, "Tile is awaiting a client upload or naturally loaded server fallback");
+			sendTileUnavailable(player, request, tile == null
+					? "Tile is awaiting a client upload or naturally loaded server fallback"
+					: "Stored tile is unrenderable and must be regenerated");
 			return;
 		}
 		MapTileIndexEntry entry = SharedMapServer.mapTiles().upsert(tile);
@@ -548,7 +554,7 @@ public final class SharedMapNetworking {
 				for (TileRequestPayload tileRequest : request.requests()) {
 					MapTile tile = SharedMapServer.tileData()
 							.find(tileRequest.dimension(), tileRequest.chunkX(), tileRequest.chunkZ()).orElse(null);
-					if (tile == null) {
+					if (tile == null || !tile.hasRenderableSurface()) {
 						prepared.add(new PreparedTile(tileRequest, null, null));
 						continue;
 					}
@@ -605,6 +611,10 @@ public final class SharedMapNetworking {
 	/** Pushes newly published tile bodies immediately; Merkle polling remains recovery only. */
 	public static void broadcastTileData(net.minecraft.server.MinecraftServer server, MapTile tile, MapTileIndexEntry entry,
 			byte[] preparedSurfacePayload) {
+		if (!tile.hasRenderableSurface()) {
+			SharedMapServer.dirtyChunks().prioritizeDiscovered(tile.dimension(), tile.chunkX(), tile.chunkZ());
+			return;
+		}
 		TileDataPayload payload = preparedSurfacePayload == null
 				? TileDataPayload.fromTile(tile, entry.revision(), SharedMapConfig.compression())
 				: new TileDataPayload(tile, entry.revision(), SharedMapConfig.compression(), preparedSurfacePayload);

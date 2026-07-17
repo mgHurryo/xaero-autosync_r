@@ -1,4 +1,4 @@
-# refactor(map-sync)!: replace tile streaming with atomic region patches
+# feat(map-sync)!: recover map gaps from online Xaero clients
 
 ## 修改目标
 
@@ -15,6 +15,7 @@
 - tile 数据仓库增加按内容 hash 的 16,384 项有界版本历史，保证 catalog 发布后即使当前 body 被替换，旧 epoch 仍可完整组包。
 - CRC32 分片、ACK/NACK、超时、有限重传、最多 8 路主包请求以及有界压缩/解码工作线程。
 - 主波次全部校验后按 Xaero region 统一释放；1x1/2x2 补洞包由服务端低水位队列逐个传输，客户端保持 8 个请求窗口并按 2 秒/128 包合并同 region 提交。
+- 缺口稳定 30 秒后才请求恢复；服务端先查询合并存储，再用 750ms 有界窗口向同维度在线客户端探测，客户端和服务端均限速，且不会启动服务端地形渲染。
 - 当前强/弱加载 chunk 始终保留本机 Xaero 结果，曾访问但当前未加载的 chunk 允许云端刷新。
 - 每 Xaero 32x32 region 单事务提交，禁止部分主波次落地。
 - `trace_id`、阶段日志、10 秒汇总、玩家限时 trace、kill switch 与 shadow mode。
@@ -47,11 +48,11 @@ High
 
 基线日志：客户端 A/B 分别出现 94/34 次注入延迟，85/26 次 region refresh pending。
 
-修改后：单元测试覆盖 1–32 正方形分割、2 秒聚合、波次屏障、低水位补洞、协议编解码、当前加载区块所有权、归档 region 反射契约和 fill-only 合并；实时黑块与长时 P95 仍需 staging 验证。
+修改后：273 项测试通过，覆盖 1–32 正方形分割、2 秒聚合、波次屏障、低水位补洞、协议编解码、当前加载区块所有权、归档 region 反射契约、fill-only 合并和在线同伴缺口恢复。单客户端实测 2,586 个 patch 全部应用，提交队列归零，稳态 P95 为 0.071ms；A/B 双客户端完成 v11 握手并触发同维度 peer probe。高速移动和 staging 长时测试仍待执行。
 
 ## 性能和成本
 
-客户端同步 tick 硬预算 4ms；主 patch 请求并发上限 8；小型补洞单路；服务端低优先级传输最多使用玩家与全局预算的低水位区间；manifest 页面上限 128。无模型或 Token 成本。
+客户端同步 tick 硬预算 4ms；主 patch 和小型补洞请求窗口上限均为 8；服务端低优先级传输逐包使用玩家与全局预算的低水位区间；manifest 页面上限 128。无模型或 Token 成本。
 
 ## 安全影响
 

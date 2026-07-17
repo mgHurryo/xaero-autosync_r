@@ -1,5 +1,9 @@
 # Xaero Map Sync
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Minecraft](https://img.shields.io/badge/Minecraft-1.17.1-green.svg)](https://www.minecraft.net/)
+[![Fabric](https://img.shields.io/badge/Fabric-Loader%200.19.3-blue.svg)](https://fabricmc.net/)
+
 面向 Minecraft Java Edition 1.17.1 Fabric 服务器的共享地图与路径点同步 Mod。客户端上传 Xaero 已渲染地图，服务器只负责合并、持久化和分发地图 tile，并维护共享路径点；客户端继续使用 Xaero World Map 与 Xaero Minimap 的原生界面查看和管理同步结果。
 
 当前预发布版本为 `3.0.0-alpha.6`，固定适配：
@@ -110,3 +114,12 @@ gradlew.bat clean build
 ## 回滚
 
 停止服务端与客户端后回退到兼容现有 v6 存储的旧 Mod JAR。若客户端地图写入异常，再从升级前备份恢复对应 `XaeroWorldMap` 目录；服务端世界、`tiles-v6` 与 `XaeroWaypoints` 无需因本次协议升级回滚。
+
+## 许可协议 / License
+
+本项目基于 [MIT License](LICENSE) 开源。
+
+Copyright (c) 2025 RMS
+
+本软件按"原样"提供，不提供任何明示或暗示的担保，包括但不限于适销性、特定用途适用性和非侵权的担保。在任何情况下，作者或版权持有人均不对因本软件或其使用产生的任何索赔、损害或其他责任负责。
+

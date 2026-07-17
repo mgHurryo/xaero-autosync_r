@@ -10,7 +10,7 @@
 	"contact": {
 		"sources": "https://github.com/"
 	},
-	"license": "LGPL-3.0-only",
+	"license": "MIT",
 	"icon": "assets/xaero-mapsync_r/icon.png",
 	"environment": "*",
 	"entrypoints": {

@@ -98,6 +98,8 @@ public final class MapTileDataStoreTest {
 		assertTrue(completed.await(5, TimeUnit.SECONDS));
 		assertEquals(latest.contentHash(), store.find(latest.dimension(), latest.chunkX(), latest.chunkZ())
 				.orElseThrow().contentHash());
+		assertEquals(first.contentHash(), store.find(first.dimension(), first.chunkX(), first.chunkZ(),
+				first.contentHash()).orElseThrow().contentHash());
 		store.stop();
 	}
 
@@ -122,6 +124,8 @@ public final class MapTileDataStoreTest {
 		assertTrue(store.commitStaged(staged.get()));
 		assertEquals(latest.contentHash(), store.find(latest.dimension(), latest.chunkX(), latest.chunkZ())
 				.orElseThrow().contentHash());
+		assertEquals(current.contentHash(), store.find(current.dimension(), current.chunkX(), current.chunkZ(),
+				current.contentHash()).orElseThrow().contentHash());
 		store.stop();
 	}
 

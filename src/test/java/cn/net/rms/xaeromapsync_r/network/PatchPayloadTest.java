@@ -42,6 +42,29 @@ class PatchPayloadTest {
 		assertEquals(Long.MIN_VALUE, decodedPage.manifests().get(0).epoch());
 	}
 
+	@Test
+	void roundTripsAdaptiveThreeByThreePatchAndManifestPage() {
+		MapPatchKey key = MapPatchKey.square("minecraft:overworld", -6, 12, 3);
+		List<TileDataPayload> bodies = new ArrayList<>();
+		List<MapPatchManifest.TileReference> references = new ArrayList<>();
+		for (int dx = 0; dx < 3; dx++) for (int dz = 0; dz < 3; dz++) {
+			MapTile tile = tile(key.minChunkX() + dx, key.minChunkZ() + dz);
+			long revision = dx * 3L + dz + 1L;
+			bodies.add(TileDataPayload.fromTile(tile, revision, "zlib"));
+			references.add(new MapPatchManifest.TileReference(tile.chunkX(), tile.chunkZ(), revision, tile.contentHash()));
+		}
+		MapPatchManifest manifest = new MapPatchManifest(key, 13L, 9L, references);
+		FriendlyByteBuf dataBuffer = new FriendlyByteBuf(Unpooled.buffer());
+		new PatchDataPayload(manifest, bodies).write(dataBuffer);
+		PatchDataPayload decoded = PatchDataPayload.read(dataBuffer);
+		assertEquals(9, decoded.tiles().size());
+		assertEquals(manifest.contentHash(), decoded.patch().manifest().contentHash());
+
+		FriendlyByteBuf pageBuffer = new FriendlyByteBuf(Unpooled.buffer());
+		new PatchManifestPagePayload(14L, 13L, 1, 1, List.of(manifest)).write(pageBuffer);
+		assertEquals(9, PatchManifestPagePayload.read(pageBuffer).manifests().get(0).tiles().size());
+	}
+
 	private static MapTile tile(int chunkX, int chunkZ) {
 		int[] states = new int[256]; Arrays.fill(states, 1);
 		int[] heights = new int[256]; Arrays.fill(heights, 64);

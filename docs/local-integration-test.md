@@ -33,7 +33,8 @@ Connect both clients to `127.0.0.1:25565`. The clients use independent names, co
 
 ## Acceptance sequence
 
-1. Confirm both clients complete protocol 8 handshake.
+1. Confirm both clients complete protocol 10 handshake without resetting the existing v6 world, tile store, client map caches or waypoints.
+   Confirm the server logs `server_render_disabled` and does not reduce the preserved dirty queue unless `map.sync.server_render.enabled=true` was explicitly configured.
 2. Explore a new loaded area with client A. Verify A keeps Xaero's native local rendering without black holes or server replacement, then verify B receives A's uploaded native tile without visiting.
 3. Build and remove a visible surface platform; wait for STABLE processing and verify both transitions on B.
 4. Create a normal waypoint with Xaero on A, select it in Xaero's native waypoint manager, click `Public`, and verify B receives it while A keeps the exact same native object without a duplicate.
@@ -45,8 +46,9 @@ Connect both clients to `127.0.0.1:25565`. The clients use independent names, co
 10. Run piston and TNT activity near one 8x8 region and verify `/sharedmap region status` enters STORM/COOLDOWN without force-loading chunks.
 11. Exercise `access grant/revoke/disable/enable/reset` and verify unauthorized waypoint mutations fail and `access_audit.jsonl` records the decision.
 12. Open and close Xaero's native waypoint manager on both clients after each mutation; verify visible sharing controls elastically fill the row, hidden Team leaves no empty slot, English labels fit, clicks are not consumed by the waypoint list, the background is not distorted, and neither client crashes.
-13. Fly across already cached terrain on A and confirm local Xaero generation remains authoritative. Verify changed native content hashes upload again, identical hashes are deduplicated, and oversized or rejected uploads fall back without force-loading chunks.
-14. Zoom and pan B across a large synchronized area. Verify tiles are applied in 32x32 Xaero region batches with no persistent checkerboard holes and with water, grass, leaves, glass and biome colors matching a locally generated reference.
+13. Fly across already cached terrain on A and confirm local Xaero generation remains authoritative. Verify changed native content hashes upload again, identical hashes are deduplicated, and oversized or rejected uploads remain retryable without force-loading chunks or server-generated fallback.
+    Confirm debug logs advance `nextCursor` across the full render-distance square and can queue more than eight tiles without repeatedly restarting at the center.
+14. Zoom and pan B across a large synchronized area. Verify the server logs a two-second `wave_published` with adaptive square sizes from 1 through 32 as needed. Confirm main squares download with up to eight requests in flight and release only after the wave is verified; 1x1/2x2 hole fills wait for low bandwidth and transfer one at a time. Verify tiles are applied in 32x32 Xaero region batches with no persistent checkerboard holes and with water, grass, leaves, glass and biome colors matching a locally generated reference.
 15. Capture `/sharedmap status` before, during and after load for average/P95 MSPT, task time, pending dirty work and bandwidth.
 
 The original `xaeromap-origin/Data` directory is reference input only. Do not point both clients at the same live Xaero data directory.

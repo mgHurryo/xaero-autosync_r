@@ -58,7 +58,8 @@ public final class MapTaskScheduler {
 
 	private void endTick(MinecraftServer server) {
 		long elapsedBeforeMapWork = System.nanoTime() - tickStartedNanos;
-		if (paused || SharedMapConfig.highLoadPause() && averageMspt >= SharedMapConfig.highLoadMsptThreshold()) {
+		if (!shouldRunAutomaticRendering(SharedMapConfig.serverMapRenderingEnabled(), paused,
+				SharedMapConfig.highLoadPause(), averageMspt, SharedMapConfig.highLoadMsptThreshold())) {
 			lastMapWorkNanos = 0L;
 			lastTaskMillis = 0.0D;
 			recordCompletedTick(elapsedBeforeMapWork);
@@ -104,6 +105,11 @@ public final class MapTaskScheduler {
 
 	static int renderLimit(int configuredLimit, int safetyLimit) {
 		return Math.max(0, Math.min(configuredLimit, safetyLimit));
+	}
+
+	static boolean shouldRunAutomaticRendering(boolean enabled, boolean paused,
+			boolean pauseUnderHighLoad, double averageMspt, int highLoadMsptThreshold) {
+		return enabled && !paused && (!pauseUnderHighLoad || averageMspt < highLoadMsptThreshold);
 	}
 
 	static long adaptiveMapWorkBudgetNanos(long currentTickElapsedNanos, long previousTickNanos,
@@ -191,18 +197,9 @@ public final class MapTaskScheduler {
 			return;
 		}
 		if (previous == null || previous.revision() != entry.revision()) {
-			cn.net.rms.xaeromapsync_r.map.MapPatchKey patchKey =
-					cn.net.rms.xaeromapsync_r.map.MapPatchKey.fromChunk(tile.dimension(), tile.chunkX(), tile.chunkZ());
-			try {
-				SharedMapServer.patches().manifest(patchKey).ifPresent(manifest -> XaeroMapsync_r.LOGGER.info(
-						"map_sync event=patch_published patch_id={} epoch={} revision={} patch_hash={} tiles={}",
-						manifest.key().stableId(), Long.toUnsignedString(manifest.epoch()), manifest.revision(),
-						Long.toUnsignedString(manifest.contentHash()), manifest.tiles().size()));
-			} catch (RuntimeException exception) {
-				XaeroMapsync_r.LOGGER.error(
-						"map_sync event=patch_publish_failed patch_id={} dimension={} chunk_x={} chunk_z={}",
-						patchKey.stableId(), tile.dimension(), tile.chunkX(), tile.chunkZ(), exception);
-			}
+			XaeroMapsync_r.LOGGER.debug(
+					"map_sync event=tile_coalesce_queued dimension={} chunk_x={} chunk_z={} revision={} window_ms={}",
+					tile.dimension(), tile.chunkX(), tile.chunkZ(), entry.revision(), 2_000);
 		}
 	}
 

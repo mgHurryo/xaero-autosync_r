@@ -42,6 +42,7 @@ public final class MapTileDataStore {
 	static final String CACHE_DIRECTORY = "tiles-v6";
 	private static final int TILE_VALUES = 256;
 	private static final int MAX_MEMORY_TILES = 1024;
+	private static final int MAX_HISTORICAL_TILES = 16_384;
 	private static final long SYNCHRONOUS_WRITE_TIMEOUT_MILLIS = 2_000L;
 	private static final int WRITER_STRIPES = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
 	private static final int MAX_PENDING_WRITES_PER_STRIPE = 256;
@@ -49,6 +50,11 @@ public final class MapTileDataStore {
 	private static final Pattern STAGED_TILE_FILE = Pattern.compile("-?\\d+_-?\\d+\\.tile\\.stage-[0-9a-fA-F-]{36}");
 	private final Map<String, MapTile> memory = new LinkedHashMap<>(128, 0.75F, true) {
 		@Override protected boolean removeEldestEntry(Map.Entry<String, MapTile> eldest) { return size() > MAX_MEMORY_TILES; }
+	};
+	private final Map<String, MapTile> historical = new LinkedHashMap<>(128, 0.75F, true) {
+		@Override protected boolean removeEldestEntry(Map.Entry<String, MapTile> eldest) {
+			return size() > MAX_HISTORICAL_TILES;
+		}
 	};
 	private ExecutorService[] writers;
 	private ExecutorService recoveryReader;
@@ -60,6 +66,8 @@ public final class MapTileDataStore {
 
 	public synchronized void start(Path root) {
 		this.root = root;
+		memory.clear();
+		historical.clear();
 		recoveryReader = Executors.newSingleThreadExecutor(runnable -> {
 			Thread thread = new Thread(runnable, "xaero-mapsync-index-recovery");
 			thread.setDaemon(true);
@@ -97,6 +105,7 @@ public final class MapTileDataStore {
 		if (target == null || activeWriter == null) return false;
 		try {
 			activeWriter.execute(() -> {
+				preserveCurrentBody(tile);
 				boolean successful = write(target, tile);
 				if (successful) {
 					synchronized (MapTileDataStore.this) {
@@ -111,7 +120,7 @@ public final class MapTileDataStore {
 			});
 			return true;
 		} catch (RejectedExecutionException exception) {
-			XaeroMapsync_r.LOGGER.warn("Map tile cache writer rejected {}", target, exception);
+			XaeroMapsync_r.LOGGER.debug("map_sync event=tile_writer_backpressure target={} action=retry_later", target);
 			return false;
 		}
 	}
@@ -150,6 +159,7 @@ public final class MapTileDataStore {
 	public boolean commitStaged(StagedTile staged) {
 		if (staged == null) return false;
 		try {
+			preserveCurrentBody(staged.tile);
 			try {
 				Files.move(staged.stagedPath, staged.targetPath, StandardCopyOption.REPLACE_EXISTING,
 						StandardCopyOption.ATOMIC_MOVE);
@@ -200,7 +210,10 @@ public final class MapTileDataStore {
 
 		Future<Boolean> writeResult;
 		try {
-			writeResult = activeWriter.submit(() -> write(target, tile));
+			writeResult = activeWriter.submit(() -> {
+				preserveCurrentBody(tile);
+				return write(target, tile);
+			});
 		} catch (RejectedExecutionException exception) {
 			XaeroMapsync_r.LOGGER.warn("Map tile cache writer rejected synchronous write {}", target, exception);
 			return false;
@@ -239,6 +252,29 @@ public final class MapTileDataStore {
 			XaeroMapsync_r.LOGGER.warn("Failed to read map tile cache {}", target, exception);
 			return Optional.empty();
 		}
+	}
+
+	/** Returns the immutable body referenced by a retained catalog epoch. */
+	public Optional<MapTile> find(String dimension, int chunkX, int chunkZ, long contentHash) {
+		Optional<MapTile> current = find(dimension, chunkX, chunkZ);
+		if (current.isPresent() && current.get().contentHash() == contentHash) return current;
+		synchronized (this) {
+			return Optional.ofNullable(historical.get(versionKey(dimension, chunkX, chunkZ, contentHash)));
+		}
+	}
+
+	private void preserveCurrentBody(MapTile replacement) {
+		Optional<MapTile> current = find(replacement.dimension(), replacement.chunkX(), replacement.chunkZ());
+		if (current.isEmpty() || current.get().contentHash() == replacement.contentHash()) return;
+		MapTile previous = current.get();
+		synchronized (this) {
+			historical.put(versionKey(previous.dimension(), previous.chunkX(), previous.chunkZ(),
+					previous.contentHash()), previous);
+		}
+	}
+
+	private static String versionKey(String dimension, int chunkX, int chunkZ, long contentHash) {
+		return key(dimension, chunkX, chunkZ) + '@' + Long.toUnsignedString(contentHash);
 	}
 
 	public int recoverIndex(MapTileIndexStore index) {

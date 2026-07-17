@@ -15,15 +15,24 @@ public final class ClientTransferManager {
 	private final Map<UUID, TransferAssembler> assemblers = new LinkedHashMap<>();
 	private final Consumer<TransferAckPayload> acknowledgementSender;
 	private final Consumer<cn.net.rms.xaeromapsync_r.network.TransferNackPayload> negativeAcknowledgementSender;
-	private final Consumer<byte[]> completionHandler;
+	private final CompletionHandler completionHandler;
+	private final java.util.Set<UUID> decoding = new java.util.HashSet<>();
+
+	@FunctionalInterface
+	public interface CompletionHandler {
+		void accept(byte[] data, Consumer<Boolean> completion);
+	}
 
 	public ClientTransferManager(Consumer<TransferAckPayload> acknowledgementSender, Consumer<byte[]> completionHandler) {
-		this(acknowledgementSender, ignored -> { }, completionHandler);
+		this(acknowledgementSender, ignored -> { }, (data, completion) -> {
+			completionHandler.accept(data);
+			completion.accept(true);
+		});
 	}
 
 	public ClientTransferManager(Consumer<TransferAckPayload> acknowledgementSender,
 			Consumer<cn.net.rms.xaeromapsync_r.network.TransferNackPayload> negativeAcknowledgementSender,
-			Consumer<byte[]> completionHandler) {
+			CompletionHandler completionHandler) {
 		this.acknowledgementSender = acknowledgementSender;
 		this.negativeAcknowledgementSender = negativeAcknowledgementSender;
 		this.completionHandler = completionHandler;
@@ -35,6 +44,10 @@ public final class ClientTransferManager {
 			if (assemblers.size() >= MAX_ACTIVE_TRANSFERS) {
 				UUID oldest = assemblers.keySet().iterator().next();
 				assemblers.remove(oldest);
+				// An empty NACK explicitly cancels a transfer. Without it the server
+				// keeps retrying an assembler the client no longer owns.
+				negativeAcknowledgementSender.accept(
+						new cn.net.rms.xaeromapsync_r.network.TransferNackPayload(oldest, List.of()));
 			}
 			assembler = new TransferAssembler();
 			assemblers.put(part.transferId(), assembler);
@@ -48,13 +61,13 @@ public final class ClientTransferManager {
 			return;
 		}
 		if (result == TransferAssembler.ReceiveResult.COMPLETE) {
-			acknowledgementSender.accept(assembler.acknowledgement());
 			byte[] data = assembler.assembledData();
-			assemblers.remove(part.transferId());
+			if (!decoding.add(part.transferId())) return;
 			try {
-				completionHandler.accept(data);
+				completionHandler.accept(data, successful -> finishCompleted(part.transferId(), successful));
 			} catch (RuntimeException exception) {
 				XaeroMapsync_r.LOGGER.warn("Rejected invalid completed transfer {}", part.transferId(), exception);
+				finishCompleted(part.transferId(), false);
 			}
 		} else if (result == TransferAssembler.ReceiveResult.CORRUPT) {
 			negativeAcknowledgementSender.accept(new cn.net.rms.xaeromapsync_r.network.TransferNackPayload(
@@ -67,15 +80,34 @@ public final class ClientTransferManager {
 
 	public synchronized int activeCount() { return assemblers.size(); }
 
-	public synchronized void clear() { assemblers.clear(); }
+	public synchronized void clear() {
+		assemblers.clear();
+		decoding.clear();
+	}
 
 	public synchronized void tick(long nowMillis) {
 		assemblers.entrySet().removeIf(entry -> {
+			if (decoding.contains(entry.getKey())) return false;
 			TransferAssembler assembler = entry.getValue();
 			if (assembler.checkTimeout(nowMillis) != TransferAssembler.Status.TIMED_OUT) return false;
 			negativeAcknowledgementSender.accept(new cn.net.rms.xaeromapsync_r.network.TransferNackPayload(
 					entry.getKey(), assembler.missingPartIndexes()));
 			return true;
 		});
+	}
+
+	private synchronized void finishCompleted(UUID transferId, boolean successful) {
+		if (!decoding.remove(transferId)) return;
+		TransferAssembler assembler = assemblers.remove(transferId);
+		if (assembler == null) return;
+		TransferAckPayload acknowledgement = assembler.acknowledgement();
+		if (successful) {
+			acknowledgementSender.accept(acknowledgement);
+			return;
+		}
+		List<Integer> allParts = java.util.stream.IntStream.rangeClosed(0,
+				acknowledgement.highestContiguousPart()).boxed().toList();
+		negativeAcknowledgementSender.accept(
+				new cn.net.rms.xaeromapsync_r.network.TransferNackPayload(transferId, allParts));
 	}
 }

@@ -30,6 +30,15 @@ final class MapTaskSchedulerTest {
 	}
 
 	@Test
+	void automaticRenderingRequiresExplicitOptIn() {
+		assertFalse(MapTaskScheduler.shouldRunAutomaticRendering(false, false, false, 0.0D, 45));
+		assertFalse(MapTaskScheduler.shouldRunAutomaticRendering(true, true, false, 0.0D, 45));
+		assertFalse(MapTaskScheduler.shouldRunAutomaticRendering(true, false, true, 45.0D, 45));
+		org.junit.jupiter.api.Assertions.assertTrue(
+				MapTaskScheduler.shouldRunAutomaticRendering(true, false, true, 44.9D, 45));
+	}
+
+	@Test
 	void adaptiveBudgetUsesCurrentAndPreviousTickHeadroom() {
 		assertEquals(15 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
 				30 * MILLIS, 45 * MILLIS, 15 * MILLIS, 45 * MILLIS, 25 * MILLIS));

@@ -1,8 +1,8 @@
 # Xaero Map Sync
 
-面向 Minecraft Java Edition 1.17.1 Fabric 服务器的共享地图与路径点同步 Mod。服务器维护已探索区域、地图 tile 和共享路径点，客户端继续使用 Xaero World Map 与 Xaero Minimap 的原生界面查看和管理同步结果。
+面向 Minecraft Java Edition 1.17.1 Fabric 服务器的共享地图与路径点同步 Mod。客户端上传 Xaero 已渲染地图，服务器只负责合并、持久化和分发地图 tile，并维护共享路径点；客户端继续使用 Xaero World Map 与 Xaero Minimap 的原生界面查看和管理同步结果。
 
-当前预发布版本为 `3.0.0-alpha.2`，固定适配：
+当前预发布版本为 `3.0.0-alpha.5`，固定适配：
 
 - Xaero's World Map `1.25.1`
 - Xaero's Minimap `22.11.1`
@@ -23,22 +23,28 @@ Xaero 22.11.1 的路径点颜色是 `0..15` 的调色板索引。服务端加载
 ## 已实现
 
 - 客户端与服务端协议握手和兼容性校验。
-- 只记录玩家附近自然加载且已探索的区块，不主动加载区块。
-- 16x16 地表 tile、revision、探索索引和持久化；自然加载区块首次探索时立即进入生成队列。
+- 自动地图来源只接受客户端 Xaero 已完成渲染的 tile；服务端不根据出生点、历史 dirty 队列或自然加载区块自动采样地形，因此不会凭空补全客户端从未去过的区域。
+- 16x16 地表 tile、revision、探索索引和持久化；客户端上传后进入 2 秒聚合窗口。
 - v6 地图格式同步 Xaero 使用的地表高度、顶部高度、稳定生物群系键、光照、发光、透明层和累积不透明度，保留水体、冰、玻璃、树叶与含水方块的原生渲染语义。
 - 客户端始终优先使用 Xaero 对本机已加载区块生成的原生地图；服务端瓦片只补充本机未加载区域，不覆盖正在生成或已经完成的本机结果。
-- 以 4x4 chunk（一个 Xaero 32x32 region）为最小原子 patch；只有 16 个 tile 全部存在并通过 revision/hash 校验后才发布、传输和一次性提交。
-- 服务端是地图数据唯一权威来源。客户端地图上传通道不再注册，避免多个客户端互相覆盖或把局部生成状态传播成黑块。
-- manifest 按玩家视口和移动方向分为前方核心、邻近环和后台三档，客户端最多并发请求 8 个 patch，单 tick 提交预算为 4ms。
+- 服务端等待 2 秒合并更新，并在每个 Xaero 32x32 region 内按最大正方形优先切成边长 1–32 的完整 patch；不发布缺边的稀疏点包，也不补黑或清空未声明坐标。
+- A/B 客户端会渐进上传 Xaero 已写入的本地地图。玩家附近的新数据可以更新服务端；远处历史数据仅填补服务端缺失 tile，绝不覆盖已有服务端 body。
+- 当前加载范围使用跨 tick 持久游标扫描，不再每次从中心重新开始；每次最多检查 256 个 tile、并行排队 64 个上传。实时 tile 的 hash 稳定 2 秒后才发布，相同内容在本次连接中不会重复上传。
+- manifest 按玩家视口和移动方向分为前方核心、邻近环和后台三档；边长 3–32 的主波次最多并发请求 8 个 patch，全部校验后按 Xaero region 统一释放，单 tick 提交预算为 4ms。
+- 1x1/2x2 小型补洞包进入低优先级队列。只有普通波次清空且玩家与全局带宽低于 50% 低水位时才逐个发送；客户端按 1 秒/128 包窗口合并同 Xaero region 提交，减少 refresh 与磁盘保存次数。
 - patch body 使用带 CRC32 的分片、ACK/NACK、超时和有限指数退避；缺片只重传当前传输，失败不会清空已有 Xaero 地图。
+- patch 中仍在本地生成的 tile 不会阻塞同包远端部分；等待 2 秒后仅提交非加载区远端子集，将加载区交还本机 Xaero 并完成 patch，不再永久挂起或重复下载整包。
 - 服务端异常退出后从持久化 tile 自动重建地图索引。
-- 协议 v8 使用同步代次和 catalog epoch 隔离迟到响应；patch hash 不包含全局 epoch，单一区域变化不会触发全图重下。
+- 协议 v10 使用同步代次和 catalog epoch 隔离迟到响应，并携带正方形原点与边长；patch hash 不包含全局 epoch，单一区域变化不会触发全图重下。
+- 服务端为已发布 catalog 保留最多 16,384 个被替换的 tile body 内存历史；旧 epoch 请求按内容 hash 读取对应版本，不会因活跃 tile 后续更新而出现 `missing-tile-body`。
 - 8x8 chunk 活动区域、STORM/COOLDOWN、MSPT 自适应暂停。
 - TNT、爆炸、活塞和光照更新活动信号。
 - Xaero World Map `1.25.1` 与 Xaero Minimap `22.11.1` 反射适配。
 - PUBLIC/TEAM 路径点创建、不可变锁定、删除、权限、数量限制和 tombstone。
 - 原生 Xaero 路径点管理页内的弹性共享操作区、条件队伍按钮、绘制锁图标、删除确认、独立共享集合与本地隐藏。
 - 服务端管理命令、区域授权、审计和紧急禁用开关。
+
+`map.sync.server_render.enabled=false` 是默认值。仅诊断或灾难恢复时才可显式设为 `true`，此时服务端会重新启用已加载地形采样。升级不会删除既有 `tiles-v6`；旧版本已经生成并存入服务器的 tile 仍可能继续分发，因为旧格式没有来源字段可安全区分客户端与服务端数据。
 
 ## 安全边界
 
@@ -47,7 +53,7 @@ Xaero 22.11.1 的路径点颜色是 `0..15` 的调色板索引。服务端加载
 - 所有玩家都不能修改已共享路径点；任何可见该点的玩家确认后都可删除，OP 也可通过服务端命令删除。
 - TEAM 归属由服务器计分板身份决定，不信任客户端提交的创建者或队伍字段。
 - 地图任务只读取主线程上已经加载的 Minecraft 对象。
-- 地图同步只接受服务端生成并持久化的 v6 patch；客户端不能上传或发布地图数据。
+- 地图上传只接受已完成握手、维度匹配、可渲染且通过限流的数据；远处归档上传采用 fill-only 合并，服务端已有 tile 优先。
 - Xaero 版本或反射契约不匹配时关闭对应适配器，不写入未知格式。
 
 ## 管理命令
@@ -87,9 +93,9 @@ Xaero 22.11.1 的路径点颜色是 `0..15` 的调色板索引。服务端加载
 - 客户端配置：`config/xaero-mapsync_r-client.properties`
 - 世界数据：`<world>/xaero-mapsync_r/`
 
-`tasks.dirty_chunk_scan_per_tick` 默认允许检查 4096 个候选区块，按 64 个任务分页领取；渲染数量事故上限为 2048，但正常吞吐由当前/上一 tick 的 MSPT 余量、40ms 事故预算和 writer 队列容量动态截停，并在 45ms 高负载阈值前保留 2ms 余量。瓦片压缩与原子落盘使用 2 至 4 条按坐标有序的 writer；只有 tile 落盘、索引发布并组成完整 4x4 patch 后，该 patch 才会进入客户端 manifest。
+`tasks.dirty_chunk_scan_per_tick` 默认允许检查 4096 个候选区块，按 64 个任务分页领取；渲染数量事故上限为 2048，但正常吞吐由当前/上一 tick 的 MSPT 余量、40ms 事故预算和 writer 队列容量动态截停，并在 45ms 高负载阈值前保留 2ms 余量。瓦片压缩与原子落盘使用 2 至 4 条按坐标有序的 writer；任一可渲染 tile 落盘并发布索引后，其所在的稀疏 patch 即可进入客户端 manifest。
 
-地图 v6 使用服务端 `tiles-v6`、`map_patch_index-v6.json` 和客户端 `xaero-mapsync_r-client-patches-v6` 缓存。本次为破坏性重置，不迁移 v5 世界、索引或 Xaero 原生地图；旧目录应只作为离线回滚备份。发布和回滚步骤见 [`docs/atomic-map-sync-v6.md`](docs/atomic-map-sync-v6.md)。
+地图 v6 使用服务端 `tiles-v6`、`map_patch_index-v6.json` 和客户端 `xaero-mapsync_r-client-patches-v6` 缓存。本次协议升级不改变存储格式，不重置或删除现有世界、服务端 tile、客户端 Xaero 地图及 `XaeroWaypoints`。发布和回滚步骤见 [`docs/atomic-map-sync-v6.md`](docs/atomic-map-sync-v6.md)。
 
 ## 构建与测试
 
@@ -103,4 +109,4 @@ gradlew.bat clean build
 
 ## 回滚
 
-停止服务端后回退 Mod JAR，恢复升级前的完整世界目录和两个客户端 `XaeroWorldMap` 目录。v6 数据不能与 v5 JAR 混用；不要手工合并 Xaero 缓存文件。
+停止服务端与客户端后回退到兼容现有 v6 存储的旧 Mod JAR。若客户端地图写入异常，再从升级前备份恢复对应 `XaeroWorldMap` 目录；服务端世界、`tiles-v6` 与 `XaeroWaypoints` 无需因本次协议升级回滚。

@@ -1,5 +1,6 @@
 package cn.net.rms.xaeromapsync_r.server.exploration;
 
+import cn.net.rms.xaeromapsync_r.config.SharedMapConfig;
 import cn.net.rms.xaeromapsync_r.server.SharedMapServer;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -25,6 +26,7 @@ public final class ExplorationTracker {
 	}
 
 	private static void tick(MinecraftServer server) {
+		if (!SharedMapConfig.serverMapRenderingEnabled()) return;
 		ticksUntilScan--;
 		if (ticksUntilScan > 0) {
 			return;

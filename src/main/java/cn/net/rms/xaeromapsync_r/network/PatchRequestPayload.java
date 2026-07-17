@@ -11,14 +11,15 @@ public record PatchRequestPayload(MapPatchKey key, long epoch, long manifestHash
 	}
 
 	public static PatchRequestPayload read(FriendlyByteBuf buffer) {
-		return new PatchRequestPayload(new MapPatchKey(buffer.readUtf(MAX_DIMENSION_LENGTH), buffer.readInt(), buffer.readInt()),
+		return new PatchRequestPayload(MapPatchKey.square(buffer.readUtf(MAX_DIMENSION_LENGTH), buffer.readInt(), buffer.readInt(), buffer.readVarInt()),
 				buffer.readLong(), buffer.readLong());
 	}
 
 	public void write(FriendlyByteBuf buffer) {
 		buffer.writeUtf(key.dimension(), MAX_DIMENSION_LENGTH);
-		buffer.writeInt(key.patchX());
-		buffer.writeInt(key.patchZ());
+		buffer.writeInt(key.minChunkX());
+		buffer.writeInt(key.minChunkZ());
+		buffer.writeVarInt(key.sideLength());
 		buffer.writeLong(epoch);
 		buffer.writeLong(manifestHash);
 	}

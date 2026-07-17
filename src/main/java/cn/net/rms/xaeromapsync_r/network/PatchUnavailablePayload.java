@@ -12,14 +12,15 @@ public record PatchUnavailablePayload(MapPatchKey key, String reason) {
 	}
 
 	public static PatchUnavailablePayload read(FriendlyByteBuf buffer) {
-		return new PatchUnavailablePayload(new MapPatchKey(buffer.readUtf(MAX_DIMENSION_LENGTH), buffer.readInt(), buffer.readInt()),
+		return new PatchUnavailablePayload(MapPatchKey.square(buffer.readUtf(MAX_DIMENSION_LENGTH), buffer.readInt(), buffer.readInt(), buffer.readVarInt()),
 				buffer.readUtf(MAX_REASON_LENGTH));
 	}
 
 	public void write(FriendlyByteBuf buffer) {
 		buffer.writeUtf(key.dimension(), MAX_DIMENSION_LENGTH);
-		buffer.writeInt(key.patchX());
-		buffer.writeInt(key.patchZ());
+		buffer.writeInt(key.minChunkX());
+		buffer.writeInt(key.minChunkZ());
+		buffer.writeVarInt(key.sideLength());
 		buffer.writeUtf(reason, MAX_REASON_LENGTH);
 	}
 }

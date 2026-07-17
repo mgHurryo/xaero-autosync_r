@@ -12,7 +12,8 @@ public final class PatchDataPayload {
 	private final List<TileDataPayload> tiles;
 
 	public PatchDataPayload(MapPatchManifest manifest, List<TileDataPayload> tiles) {
-		if (tiles == null || tiles.size() != MapPatchKey.TILE_COUNT) throw new IllegalArgumentException("Patch data must contain 16 tiles");
+		if (tiles == null || tiles.size() != manifest.tiles().size())
+			throw new IllegalArgumentException("Patch data must match the manifest tile count");
 		this.patch = new MapPatch(manifest, tiles.stream().map(TileDataPayload::tile).toList());
 		for (TileDataPayload tile : tiles) {
 			MapPatchManifest.TileReference reference = manifest.tiles().stream()
@@ -26,7 +27,8 @@ public final class PatchDataPayload {
 	public static PatchDataPayload read(FriendlyByteBuf buffer) {
 		MapPatchManifest manifest = MapPatchPayloadCodec.readManifest(buffer);
 		int count = buffer.readVarInt();
-		if (count != MapPatchKey.TILE_COUNT) throw new IllegalArgumentException("Invalid patch data tile count: " + count);
+		if (count != manifest.key().tileCount())
+			throw new IllegalArgumentException("Invalid patch data tile count: " + count);
 		List<TileDataPayload> tiles = new ArrayList<>(count);
 		for (int index = 0; index < count; index++) tiles.add(TileDataPayload.read(buffer));
 		return new PatchDataPayload(manifest, tiles);

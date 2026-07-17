@@ -14,13 +14,14 @@ public final class ViewportPatchPrioritizer {
 			double motionX, double motionZ) {
 		List<MapPatchManifest> result = new ArrayList<>(manifests);
 		result.sort(Comparator.comparing((MapPatchManifest manifest) -> score(manifest.key(), centerChunkX, centerChunkZ,
-				motionX, motionZ)).thenComparing(MapPatchManifest::key));
+				motionX, motionZ)).thenComparing((MapPatchManifest manifest) -> -manifest.key().sideLength())
+				.thenComparing(MapPatchManifest::key));
 		return List.copyOf(result);
 	}
 
 	static Score score(MapPatchKey key, int centerChunkX, int centerChunkZ, double motionX, double motionZ) {
-		double patchCenterX = key.minChunkX() + 1.5D;
-		double patchCenterZ = key.minChunkZ() + 1.5D;
+		double patchCenterX = key.minChunkX() + (key.sideLength() - 1) / 2.0D;
+		double patchCenterZ = key.minChunkZ() + (key.sideLength() - 1) / 2.0D;
 		double dx = patchCenterX - centerChunkX;
 		double dz = patchCenterZ - centerChunkZ;
 		double distance = Math.max(Math.abs(dx), Math.abs(dz));

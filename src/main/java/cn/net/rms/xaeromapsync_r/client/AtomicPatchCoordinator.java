@@ -28,7 +28,8 @@ public final class AtomicPatchCoordinator {
 	}
 
 	private static final int MAX_PENDING_PATCHES = 2048;
-	private static final int MAX_ATTEMPTS = 8;
+	private static final int MAX_TILES_PER_COMMIT = 16;
+	private static final int MAX_ATTEMPTS_PER_RETRY_WINDOW = 8;
 	private static final long BASE_RETRY_MILLIS = 100L;
 	private static final long MAX_LOCAL_GENERATION_WAIT_MILLIS = 2_000L;
 	private static final long MAX_LOCAL_RETRY_MILLIS = 500L;
@@ -55,13 +56,26 @@ public final class AtomicPatchCoordinator {
 		long hash = patch.manifest().contentHash();
 		Long pendingHash = pendingHashes.get(patch.manifest().key());
 		if (pendingHash != null) return pendingHash == hash;
-		if (pendingCount >= MAX_PENDING_PATCHES) return false;
-		String region = regionKey(patch.manifest().key());
-		Transaction transaction = new Transaction(patch);
-		byRegion.computeIfAbsent(region, ignored -> new ArrayDeque<>()).addLast(transaction);
-		pendingHashes.put(patch.manifest().key(), hash);
-		pendingCount++;
-		transition(transaction, Phase.VERIFIED, "body-validated");
+		return enqueueVerifiedWave(List.of(patch));
+	}
+
+	/** Opens one verified download wave as one Xaero mutation per native region. */
+	public synchronized boolean enqueueVerifiedWave(List<MapPatch> patches) {
+		if (patches == null || patches.isEmpty()) return true;
+		Map<String, List<MapPatch>> grouped = new LinkedHashMap<>();
+		for (MapPatch patch : patches) {
+			if (patch == null || pendingHashes.containsKey(patch.manifest().key())) return false;
+			grouped.computeIfAbsent(regionKey(patch.manifest().key()), ignored -> new ArrayList<>()).add(patch);
+		}
+		if (pendingCount + patches.size() > MAX_PENDING_PATCHES) return false;
+		for (Map.Entry<String, List<MapPatch>> group : grouped.entrySet()) {
+			Transaction transaction = new Transaction(group.getValue());
+			byRegion.computeIfAbsent(group.getKey(), ignored -> new ArrayDeque<>()).addLast(transaction);
+			transition(transaction, Phase.VERIFIED, "wave-body-validated");
+		}
+		for (MapPatch patch : patches)
+			pendingHashes.put(patch.manifest().key(), patch.manifest().contentHash());
+		pendingCount += patches.size();
 		return true;
 	}
 
@@ -77,8 +91,8 @@ public final class AtomicPatchCoordinator {
 			process(transaction, nowMillis);
 			if (transaction.phase == Phase.APPLIED || transaction.phase == Phase.FAILED) {
 				queue.removeFirst();
-				pendingHashes.remove(transaction.patch.manifest().key());
-				pendingCount--;
+				for (MapPatch patch : transaction.patches) pendingHashes.remove(patch.manifest().key());
+				pendingCount -= transaction.patches.size();
 				if (queue.isEmpty()) byRegion.remove(region);
 				completed++;
 			} else if (transaction.phase == Phase.WAIT_XAERO_IDLE && queue.size() > 1) {
@@ -109,12 +123,14 @@ public final class AtomicPatchCoordinator {
 					boolean localWaitExpired = transaction.localWaitStartedMillis >= 0L
 							&& nowMillis - transaction.localWaitStartedMillis >= MAX_LOCAL_GENERATION_WAIT_MILLIS;
 					boolean localGenerating = false;
-					for (MapTile tile : transaction.patch.tiles()) {
+					for (MapTile tile : transaction.tiles) {
 						XaeroMapAdapter.LocalTileState state = adapter.localTileState(tile);
 						if (state == XaeroMapAdapter.LocalTileState.READY) continue;
 						if (state == XaeroMapAdapter.LocalTileState.GENERATING) {
 							localGenerating = true;
-							if (!localWaitExpired) continue;
+							// A loaded local chunk always belongs to Xaero. The timeout only
+							// releases the sync queue; it never authorizes a remote overwrite.
+							continue;
 						}
 						remote.add(tile);
 					}
@@ -135,26 +151,49 @@ public final class AtomicPatchCoordinator {
 					}
 					transaction.remoteTiles = List.copyOf(remote);
 					transaction.forcedRemote = localGenerating && localWaitExpired;
-					transition(transaction, Phase.COMMITTING, transaction.forcedRemote
-							? "local-generation-timeout" : remote.isEmpty() ? "local-authoritative" : "xaero-region-ready");
+					transition(transaction, Phase.COMMITTING, localGenerating && localWaitExpired
+							? "local-generation-timeout-local-authoritative"
+							: remote.isEmpty() ? "local-authoritative" : "xaero-region-ready");
 				}
 				case WAIT_XAERO_IDLE -> {
 					if (nowMillis < transaction.retryAtMillis) return;
 					transaction.phase = Phase.PREPARED;
 				}
 				case COMMITTING -> {
-					XaeroMapAdapter.ApplyResult result = transaction.remoteTiles.isEmpty()
+					List<MapTile> commitSlice = transaction.nextCommitSlice();
+					XaeroMapAdapter.ApplyResult result = commitSlice.isEmpty()
 							? XaeroMapAdapter.ApplyResult.APPLIED
-							: adapter.applyBatchResult(transaction.remoteTiles);
+							: adapter.applyBatchResult(commitSlice);
 					if (result == XaeroMapAdapter.ApplyResult.APPLIED) {
-						appliedSink.accept(transaction.patch);
+						transaction.committedTileCount += commitSlice.size();
+						transaction.attempts = 0;
+						if (transaction.committedTileCount < transaction.remoteTiles.size()) {
+							// Each slice is bounded so one region cannot monopolize the client
+							// tick. The next slice waits for Xaero's requested refresh to settle.
+							transaction.retryAtMillis = nowMillis + BASE_RETRY_MILLIS;
+							transition(transaction, Phase.WAIT_REFRESH, "commit-slice-complete");
+							return;
+						}
+						// A loaded tile remains owned by Xaero after the bounded wait. Mark the
+						// patch complete once its remote subset is committed; Xaero's eventual
+						// local render is uploaded as a newer authoritative revision.
+						for (MapPatch patch : transaction.patches) appliedSink.accept(patch);
 						if (transaction.forcedRemote) forcedRemoteCommits++;
 						transition(transaction, Phase.APPLIED, "atomic-commit-complete");
 						return;
 					}
-					if (result == XaeroMapAdapter.ApplyResult.UNAVAILABLE || ++transaction.attempts >= MAX_ATTEMPTS) {
-						transition(transaction, Phase.FAILED, result == XaeroMapAdapter.ApplyResult.UNAVAILABLE
-								? "adapter-unavailable" : "retry-exhausted");
+					if (result == XaeroMapAdapter.ApplyResult.UNAVAILABLE) {
+						transition(transaction, Phase.FAILED, "adapter-unavailable");
+						return;
+					}
+					transaction.attempts++;
+					if (transaction.attempts >= MAX_ATTEMPTS_PER_RETRY_WINDOW) {
+						// Xaero refresh can legitimately remain pending for longer than one
+						// retry window. Keep the verified transaction instead of discarding
+						// it and starting a duplicate manifest/download loop.
+						transaction.attempts = 0;
+						transaction.retryAtMillis = nowMillis + retryDelay(MAX_ATTEMPTS_PER_RETRY_WINDOW);
+						transition(transaction, Phase.WAIT_REFRESH, "retry-window-reset");
 						return;
 					}
 					transaction.retryAtMillis = nowMillis + retryDelay(transaction.attempts);
@@ -173,8 +212,9 @@ public final class AtomicPatchCoordinator {
 	private void transition(Transaction transaction, Phase next, String reason) {
 		Phase previous = transaction.phase;
 		transaction.phase = next;
-		transitionSink.accept(new Transition(transaction.patch.manifest().key(), transaction.patch.manifest().epoch(),
-				transaction.patch.manifest().contentHash(), previous, next, transaction.attempts, reason));
+		MapPatch representative = transaction.patches.get(0);
+		transitionSink.accept(new Transition(representative.manifest().key(), representative.manifest().epoch(),
+				representative.manifest().contentHash(), previous, next, transaction.attempts, reason));
 	}
 
 	private static long retryDelay(int attempts) {
@@ -225,7 +265,8 @@ public final class AtomicPatchCoordinator {
 			long forcedRemoteCommits, long localGenerationRechecks, Map<Phase, Integer> phaseCounts) { }
 
 	private static final class Transaction {
-		private final MapPatch patch;
+		private final List<MapPatch> patches;
+		private final List<MapTile> tiles;
 		private Phase phase = Phase.FETCHING;
 		private List<MapTile> remoteTiles = List.of();
 		private long retryAtMillis;
@@ -233,7 +274,16 @@ public final class AtomicPatchCoordinator {
 		private long localWaitStartedMillis = -1L;
 		private int localWaitChecks;
 		private boolean forcedRemote;
+		private int committedTileCount;
 
-		private Transaction(MapPatch patch) { this.patch = patch; }
+		private Transaction(List<MapPatch> patches) {
+			this.patches = List.copyOf(patches);
+			this.tiles = patches.stream().flatMap(patch -> patch.tiles().stream()).toList();
+		}
+
+		private List<MapTile> nextCommitSlice() {
+			int end = Math.min(remoteTiles.size(), committedTileCount + MAX_TILES_PER_COMMIT);
+			return remoteTiles.subList(committedTileCount, end);
+		}
 	}
 }

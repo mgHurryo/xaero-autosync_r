@@ -72,10 +72,11 @@ public final class SharedMapServer {
 		NETWORK_BUDGET.setBytesPerPlayerPerTick(SharedMapConfig.bytesPerPlayerPerTick());
 		NETWORK_BUDGET.setGlobalBytesPerTick(SharedMapConfig.globalBytesPerTick());
 		XaeroMapsync_r.LOGGER.info(
-				"Registering shared map server: bytesPerPlayerPerTick={} globalBytesPerTick={} maxPacketBytes={} compression={} protocol={} mapFormat={}",
+				"Registering shared map server: bytesPerPlayerPerTick={} globalBytesPerTick={} maxPacketBytes={} compression={} protocol={} mapFormat={} serverRenderEnabled={}",
 				SharedMapConfig.bytesPerPlayerPerTick(), SharedMapConfig.globalBytesPerTick(),
 				SharedMapConfig.maxPacketBytes(), SharedMapConfig.compression(),
-				SharedMapConfig.protocolVersion(), SharedMapConfig.mapFormatVersion());
+				SharedMapConfig.protocolVersion(), SharedMapConfig.mapFormatVersion(),
+				SharedMapConfig.serverMapRenderingEnabled());
 		SharedMapCommands.register();
 		ExplorationTracker.register();
 		MAP_TASKS.register();
@@ -145,6 +146,12 @@ public final class SharedMapServer {
 	}
 
 	private static void queueStartupMapWork(net.minecraft.server.MinecraftServer server) {
+		if (!SharedMapConfig.serverMapRenderingEnabled()) {
+			XaeroMapsync_r.LOGGER.info(
+					"map_sync event=server_render_disabled action=client_xaero_uploads_only dirty_chunks_preserved={} indexed_tiles={}",
+					DIRTY_CHUNKS.totalCount(), MAP_TILES.totalCount());
+			return;
+		}
 		int missingExplored = StartupMapWorkPlanner.queueMissingExploredChunks(
 				EXPLORED_CHUNKS.snapshot(), MAP_TILES, DIRTY_CHUNKS);
 		boolean resample = MAP_TILES.requiresSurfaceResample();
@@ -280,7 +287,7 @@ public final class SharedMapServer {
 	public static SharedMapAccessManager access() { return ACCESS; }
 
 	public static synchronized void recordBlockChange(String dimension, BlockPos pos) {
-		DIRTY_CHUNKS.markDirty(dimension, pos);
+		if (SharedMapConfig.serverMapRenderingEnabled()) DIRTY_CHUNKS.markDirty(dimension, pos);
 		TickActivity tick = activityAt(dimension, pos.getX(), pos.getZ());
 		tick.blockChanges = incrementUpTo(tick.blockChanges, ACTIVITY_THRESHOLDS.blockChanges());
 		tick.dirtyChunks.add(ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4));

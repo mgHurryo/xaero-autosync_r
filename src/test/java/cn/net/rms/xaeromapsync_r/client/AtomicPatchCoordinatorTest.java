@@ -32,6 +32,77 @@ class AtomicPatchCoordinatorTest {
 	}
 
 	@Test
+	void commitsAdaptiveThreeByThreeSquareAsSingleBatch() {
+		FakeAdapter adapter = new FakeAdapter();
+		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, ignored -> { }, ignored -> { });
+		coordinator.enqueueVerified(patch(MapPatchKey.square("minecraft:overworld", -3, 8, 3), 9));
+
+		coordinator.tick(100L, Long.MAX_VALUE);
+
+		assertEquals(1, adapter.calls);
+		assertEquals(9, adapter.lastBatchSize);
+	}
+
+	@Test
+	void releasesDownloadedWaveAsOneMutationPerXaeroRegion() {
+		FakeAdapter adapter = new FakeAdapter();
+		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, ignored -> { }, ignored -> { });
+		MapPatch first = patch(MapPatchKey.square("minecraft:overworld", 0, 0, 2), 4);
+		MapPatch second = patch(MapPatchKey.square("minecraft:overworld", 2, 0, 2), 4);
+		assertTrue(coordinator.enqueueVerifiedWave(List.of(first, second)));
+
+		coordinator.tick(100L, Long.MAX_VALUE);
+
+		assertEquals(1, adapter.calls);
+		assertEquals(8, adapter.lastBatchSize);
+		assertEquals(0, coordinator.pendingCount());
+	}
+
+	@Test
+	void splitsLargeRegionCommitAcrossClientTicks() {
+		FakeAdapter adapter = new FakeAdapter();
+		List<MapPatch> applied = new ArrayList<>();
+		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, applied::add, ignored -> { });
+		List<MapPatch> wave = List.of(
+				patch(MapPatchKey.square("minecraft:overworld", 0, 0, 4)),
+				patch(MapPatchKey.square("minecraft:overworld", 4, 0, 4)),
+				patch(MapPatchKey.square("minecraft:overworld", 8, 0, 4)));
+		coordinator.enqueueVerifiedWave(wave);
+
+		coordinator.tick(100L, Long.MAX_VALUE);
+		assertEquals(1, adapter.calls);
+		assertEquals(16, adapter.lastBatchSize);
+		assertTrue(coordinator.hasPending(wave.get(0).manifest().key()));
+
+		coordinator.tick(200L, Long.MAX_VALUE);
+		coordinator.tick(300L, Long.MAX_VALUE);
+
+		assertEquals(3, adapter.calls);
+		assertEquals(16, adapter.lastBatchSize);
+		assertEquals(wave, applied);
+		assertEquals(0, coordinator.pendingCount());
+	}
+
+	@Test
+	void refreshBusyDoesNotFailOrReleaseTransactionAfterRetryWindow() {
+		FakeAdapter adapter = new FakeAdapter();
+		adapter.applyResult = XaeroMapAdapter.ApplyResult.RETRY_LATER;
+		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, ignored -> { }, ignored -> { });
+		MapPatch patch = patch(new MapPatchKey("minecraft:overworld", 0, 0));
+		coordinator.enqueueVerified(patch);
+
+		long now = 100L;
+		for (int attempt = 0; attempt < 20; attempt++) {
+			coordinator.tick(now, Long.MAX_VALUE);
+			now += 5_000L;
+		}
+
+		assertTrue(coordinator.hasPending(patch.manifest().key()));
+		assertEquals(1, coordinator.pendingCount());
+		assertEquals(1, coordinator.statistics(now).phaseCounts().get(AtomicPatchCoordinator.Phase.WAIT_REFRESH));
+	}
+
+	@Test
 	void preservesLocalXaeroTilesAndWaitsForGeneration() {
 		FakeAdapter adapter = new FakeAdapter();
 		adapter.generatingTiles = ignored -> true;
@@ -48,10 +119,11 @@ class AtomicPatchCoordinatorTest {
 	}
 
 	@Test
-	void forcesRemoteCommitAfterTwoSecondLocalGenerationDeadline() {
+	void releasesQueueWithoutOverwritingLocalGenerationAfterTwoSeconds() {
 		FakeAdapter adapter = new FakeAdapter();
 		adapter.generatingTiles = ignored -> true;
-		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, ignored -> { }, ignored -> { });
+		List<MapPatch> applied = new ArrayList<>();
+		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, applied::add, ignored -> { });
 		MapPatch patch = patch(new MapPatchKey("minecraft:overworld", 0, 0));
 		coordinator.enqueueVerified(patch);
 
@@ -65,14 +137,14 @@ class AtomicPatchCoordinatorTest {
 		assertEquals(0, adapter.calls);
 		coordinator.tick(2_100L, Long.MAX_VALUE);
 
-		assertEquals(1, adapter.calls);
-		assertEquals(16, adapter.lastBatchSize);
+		assertEquals(0, adapter.calls);
 		assertFalse(coordinator.hasPending(patch.manifest().key()));
 		assertEquals(1L, coordinator.statistics(2_100L).forcedRemoteCommits());
+		assertEquals(List.of(patch), applied);
 	}
 
 	@Test
-	void timeoutNeverOverwritesReadyLocalTiles() {
+	void timeoutNeverOverwritesReadyOrGeneratingLocalTiles() {
 		FakeAdapter adapter = new FakeAdapter();
 		adapter.readyTiles = tile -> tile.chunkX() == 0 && tile.chunkZ() == 0;
 		adapter.generatingTiles = tile -> !adapter.readyTiles.test(tile);
@@ -82,8 +154,25 @@ class AtomicPatchCoordinatorTest {
 		coordinator.tick(100L, Long.MAX_VALUE);
 		coordinator.tick(2_100L, Long.MAX_VALUE);
 
-		assertEquals(15, adapter.lastBatchSize);
-		assertFalse(adapter.lastBatch.stream().anyMatch(tile -> tile.chunkX() == 0 && tile.chunkZ() == 0));
+		assertEquals(0, adapter.calls);
+		assertEquals(0, coordinator.pendingCount());
+	}
+
+	@Test
+	void timedOutMixedPatchCommitsRemoteSubsetOnceAndRetainsLocalBodies() {
+		FakeAdapter adapter = new FakeAdapter();
+		adapter.generatingTiles = tile -> tile.chunkX() == 0;
+		List<MapPatch> applied = new ArrayList<>();
+		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, applied::add, ignored -> { });
+		MapPatch patch = patch(MapPatchKey.square("minecraft:overworld", 0, 0, 2));
+		coordinator.enqueueVerified(patch);
+
+		coordinator.tick(100L, Long.MAX_VALUE);
+		coordinator.tick(2_100L, Long.MAX_VALUE);
+		assertEquals(1, adapter.calls);
+		assertEquals(2, adapter.lastBatchSize);
+		assertFalse(coordinator.hasPending(patch.manifest().key()));
+		assertEquals(List.of(patch), applied);
 	}
 
 	@Test
@@ -122,6 +211,29 @@ class AtomicPatchCoordinatorTest {
 	}
 
 	@Test
+	void refreshRetryWindowKeepsVerifiedPatchUntilXaeroAcceptsIt() {
+		FakeAdapter adapter = new FakeAdapter();
+		adapter.applyResult = XaeroMapAdapter.ApplyResult.RETRY_LATER;
+		List<MapPatch> applied = new ArrayList<>();
+		List<AtomicPatchCoordinator.Transition> transitions = new ArrayList<>();
+		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, applied::add, transitions::add);
+		MapPatch patch = patch(new MapPatchKey("minecraft:overworld", 0, 0));
+		coordinator.enqueueVerified(patch);
+
+		for (long now : List.of(100L, 300L, 700L, 1_500L, 3_100L, 6_300L, 9_500L, 12_700L))
+			coordinator.tick(now, Long.MAX_VALUE);
+
+		assertTrue(coordinator.hasPending(patch.manifest().key()));
+		assertTrue(applied.isEmpty());
+		assertEquals("retry-window-reset", transitions.get(transitions.size() - 1).reason());
+
+		adapter.applyResult = XaeroMapAdapter.ApplyResult.APPLIED;
+		coordinator.tick(17_700L, Long.MAX_VALUE);
+		assertEquals(List.of(patch), applied);
+		assertFalse(coordinator.hasPending(patch.manifest().key()));
+	}
+
+	@Test
 	void expiresQueuedLocalWaitWithoutBypassingRefreshExclusivity() {
 		FakeAdapter adapter = new FakeAdapter();
 		adapter.generatingTiles = tile -> tile.chunkX() >= 4;
@@ -145,15 +257,17 @@ class AtomicPatchCoordinatorTest {
 	}
 
 	@Test
-	void manifestPollingDoesNotWaitForCommitQueueToDrain() {
+	void manifestPollingWaitsForCommitQueueToDrain() {
 		FakeAdapter adapter = new FakeAdapter();
 		AtomicPatchCoordinator coordinator = new AtomicPatchCoordinator(adapter, ignored -> { }, ignored -> { });
 		coordinator.enqueueVerified(patch(new MapPatchKey("minecraft:overworld", 0, 0)));
 
 		assertEquals(1, coordinator.pendingCount());
-		assertTrue(AtomicMapSyncClient.shouldPollManifest(100, 0, 0));
-		assertFalse(AtomicMapSyncClient.shouldPollManifest(100, 1, 0));
-		assertFalse(AtomicMapSyncClient.shouldPollManifest(99, 0, 0));
+		assertFalse(AtomicMapSyncClient.shouldPollManifest(100, 0, 0, 0, coordinator.pendingCount()));
+		assertTrue(AtomicMapSyncClient.shouldPollManifest(100, 0, 0, 0, 0));
+		assertFalse(AtomicMapSyncClient.shouldPollManifest(100, 1, 0, 0, 0));
+		assertFalse(AtomicMapSyncClient.shouldPollManifest(100, 0, 0, 1, 0));
+		assertFalse(AtomicMapSyncClient.shouldPollManifest(99, 0, 0, 0, 0));
 	}
 
 	@Test
@@ -161,6 +275,40 @@ class AtomicPatchCoordinatorTest {
 		assertFalse(AtomicMapSyncClient.shouldDownloadManifest(null, 7L, true, false, false));
 		assertFalse(AtomicMapSyncClient.shouldDownloadManifest(7L, 7L, false, false, false));
 		assertTrue(AtomicMapSyncClient.shouldDownloadManifest(null, Long.MIN_VALUE, false, false, false));
+	}
+
+	@Test
+	void staleCatalogAndReplacedBodiesRestartManifestImmediately() {
+		assertTrue(AtomicMapSyncClient.requiresManifestRestart("missing-patch"));
+		assertTrue(AtomicMapSyncClient.requiresManifestRestart("missing-tile-body"));
+		assertFalse(AtomicMapSyncClient.requiresManifestRestart("worker-queue-full"));
+	}
+
+	@Test
+	void waveBarrierWaitsForManifestAndEveryRequestedBody() {
+		assertFalse(AtomicMapSyncClient.canReleaseWave(false, 0, 0, 2, 2));
+		assertFalse(AtomicMapSyncClient.canReleaseWave(true, 1, 0, 2, 2));
+		assertFalse(AtomicMapSyncClient.canReleaseWave(true, 0, 1, 2, 2));
+		assertFalse(AtomicMapSyncClient.canReleaseWave(true, 0, 0, 2, 1));
+		assertTrue(AtomicMapSyncClient.canReleaseWave(true, 0, 0, 2, 2));
+	}
+
+	@Test
+	void smallHolePatchesWaitUntilLargeTransfersDrainThenRunOneAtATime() {
+		assertTrue(AtomicMapSyncClient.canStartPatchRequest(8, 7, true, false));
+		assertFalse(AtomicMapSyncClient.canStartPatchRequest(8, 8, false, true));
+		assertFalse(AtomicMapSyncClient.canStartPatchRequest(2, 0, false, false));
+		assertFalse(AtomicMapSyncClient.canStartPatchRequest(2, 0, true, true));
+		assertFalse(AtomicMapSyncClient.canStartPatchRequest(1, 1, false, true));
+		assertTrue(AtomicMapSyncClient.canStartPatchRequest(2, 0, false, true));
+	}
+
+	@Test
+	void smallHoleCommitsAreBatchedByCountOrOneSecondWindow() {
+		assertFalse(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 1_999L));
+		assertTrue(AtomicMapSyncClient.shouldFlushSmallWave(1, 1_000L, 2_000L));
+		assertTrue(AtomicMapSyncClient.shouldFlushSmallWave(128, 1_999L, 2_000L));
+		assertFalse(AtomicMapSyncClient.shouldFlushSmallWave(0, -1L, 10_000L));
 	}
 
 	@Test
@@ -188,16 +336,21 @@ class AtomicPatchCoordinatorTest {
 	}
 
 	private static MapPatch patch(MapPatchKey key) {
+		return patch(key, key.tileCount());
+	}
+
+	private static MapPatch patch(MapPatchKey key, int tileCount) {
 		List<MapTile> tiles = new ArrayList<>();
 		List<MapPatchManifest.TileReference> references = new ArrayList<>();
-		for (int dx = 0; dx < 4; dx++) for (int dz = 0; dz < 4; dz++) {
-			long hash = dx * 4L + dz + 1L;
+		for (int dx = 0; dx < key.sideLength(); dx++) for (int dz = 0; dz < key.sideLength(); dz++) {
+			if (tiles.size() >= tileCount) break;
+			long hash = dx * (long) key.sideLength() + dz + 1L;
 			int chunkX = key.minChunkX() + dx;
 			int chunkZ = key.minChunkZ() + dz;
 			tiles.add(tile(chunkX, chunkZ, hash));
 			references.add(new MapPatchManifest.TileReference(chunkX, chunkZ, hash, hash));
 		}
-		return new MapPatch(new MapPatchManifest(key, 1L, 16L, references), tiles);
+		return new MapPatch(new MapPatchManifest(key, 1L, tileCount, references), tiles);
 	}
 
 	private static MapTile tile(int chunkX, int chunkZ, long hash) {

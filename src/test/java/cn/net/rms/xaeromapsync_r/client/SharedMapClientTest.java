@@ -104,6 +104,31 @@ final class SharedMapClientTest {
 	}
 
 	@Test
+	void liveTileScanVisitsEveryCoordinateWithoutCenterStarvation() {
+		int radius = 3;
+		java.util.Set<Long> offsets = new java.util.HashSet<>();
+		for (int cursor = 0; cursor < SharedMapClient.localTileScanCount(radius); cursor++) {
+			long offset = SharedMapClient.localTileScanOffset(radius, cursor);
+			int dx = (int) (offset >> 32);
+			int dz = (int) offset;
+			assertTrue(Math.abs(dx) <= radius);
+			assertTrue(Math.abs(dz) <= radius);
+			assertTrue(offsets.add(offset));
+		}
+		assertEquals(49, offsets.size());
+		assertEquals(0L, SharedMapClient.localTileScanOffset(radius, 0));
+	}
+
+	@Test
+	void archiveRegionOffsetsCoverNegativeRegionEdgesWithoutGaps() {
+		XaeroMapAdapter.LocalRegion region = new XaeroMapAdapter.LocalRegion(-2, -1);
+		assertEquals(-64, SharedMapClient.archiveChunkX(region, 0));
+		assertEquals(-32, SharedMapClient.archiveChunkZ(region, 0));
+		assertEquals(-33, SharedMapClient.archiveChunkX(region, 1023));
+		assertEquals(-1, SharedMapClient.archiveChunkZ(region, 1023));
+	}
+
+	@Test
 	void newerPushSupersedesDeferredTileButOlderPayloadDoesNot() {
 		assertTrue(SharedMapClient.shouldReplacePendingRevision(10L, 11L));
 		assertFalse(SharedMapClient.shouldReplacePendingRevision(11L, 11L));

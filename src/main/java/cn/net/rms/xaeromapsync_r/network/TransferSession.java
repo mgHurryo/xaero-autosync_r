@@ -155,8 +155,13 @@ public final class TransferSession {
 	}
 
 	private void validateClock(long nowMillis) {
+		if (nowMillis < 0) {
+			throw new IllegalArgumentException("Current time must not be negative");
+		}
 		if (nowMillis < lastProgressMillis) {
-			throw new IllegalArgumentException("Current time moved backwards");
+			// Wall-clock corrections must not abort an otherwise valid transfer. Restart
+			// the timeout window from the corrected time instead.
+			lastProgressMillis = nowMillis;
 		}
 	}
 }

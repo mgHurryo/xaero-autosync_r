@@ -2,15 +2,19 @@ package cn.net.rms.xaeromapsync_r.server.dirty;
 
 import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 public final class DirtyChunkProcessor {
 	private static final int CLAIM_PAGE_SIZE = 64;
+	static final long RECALCULATION_TIMEOUT_TICKS = 20L * 30L;
 	private final DirtyChunkStore store;
 	private final LoadedChunkProbe loadedChunkProbe;
 	private final ChunkRecalculator recalculator;
+	private final Map<DirtyChunkStore.StableDirtyChunk, Long> pendingRecalculations = new IdentityHashMap<>();
 	private long ticks;
 	private long claimed;
 	private long completed;
@@ -42,6 +46,7 @@ public final class DirtyChunkProcessor {
 		if (canContinueRendering == null) {
 			throw new IllegalArgumentException("Dirty chunk render deadline is required");
 		}
+		expireRecalculations();
 		if (renderBudget == 0 || scanBudget == 0) {
 			return recordResult(renderBudget, List.of(), 0, 0, 0, 0);
 		}
@@ -108,6 +113,7 @@ public final class DirtyChunkProcessor {
 					submitted = false;
 				}
 				if (submitted) {
+					pendingRecalculations.put(chunk, ticks);
 					submittedThisTick++;
 				} else if (finish(chunk, false, false) == CompletionResult.RETAINED) {
 					failedThisTick++;
@@ -138,7 +144,23 @@ public final class DirtyChunkProcessor {
 
 	/** Completes an accepted recalculation after its durable tile write and index publication finish. */
 	public synchronized CompletionResult completeRecalculation(DirtyChunkStore.StableDirtyChunk chunk, boolean successful) {
+		pendingRecalculations.remove(chunk);
 		return finish(chunk, successful, true);
+	}
+
+	private void expireRecalculations() {
+		var iterator = pendingRecalculations.entrySet().iterator();
+		while (iterator.hasNext()) {
+			Map.Entry<DirtyChunkStore.StableDirtyChunk, Long> entry = iterator.next();
+			if (ticks - entry.getValue() < RECALCULATION_TIMEOUT_TICKS) continue;
+			DirtyChunkStore.StableDirtyChunk chunk = entry.getKey();
+			iterator.remove();
+			// A callback can be lost after an accepted asynchronous handoff. Release
+			// the claim so the durable recalculation can be attempted again.
+			CompletionResult result = finish(chunk, false, false);
+			if (result == CompletionResult.RETAINED) failed++;
+			else stale++;
+		}
 	}
 
 	private CompletionResult finish(DirtyChunkStore.StableDirtyChunk chunk, boolean successful, boolean recordStatistics) {

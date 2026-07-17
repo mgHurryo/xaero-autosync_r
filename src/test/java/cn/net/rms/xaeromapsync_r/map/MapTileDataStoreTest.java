@@ -189,6 +189,15 @@ public final class MapTileDataStoreTest {
 	}
 
 	@Test
+	void asynchronousWriteIsRejectedAfterStoreStops() {
+		MapTileDataStore store = new MapTileDataStore();
+		store.start(tempDir);
+		store.stop();
+
+		assertFalse(store.putAsynchronously(tile("minecraft:overworld", 1, 2, 20), result -> { }));
+	}
+
+	@Test
 	void recoveryRemovesOrphanedStagedTileFiles() throws Exception {
 		String dimension = "minecraft:overworld";
 		Path dimensionPath = tempDir.resolve(Base64.getUrlEncoder().withoutPadding()

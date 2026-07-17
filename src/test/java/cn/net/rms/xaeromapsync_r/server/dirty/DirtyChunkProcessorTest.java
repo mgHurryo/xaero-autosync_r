@@ -169,6 +169,27 @@ final class DirtyChunkProcessorTest {
 	}
 
 	@Test
+	void missingAsynchronousCallbackReleasesClaimAfterTimeout() {
+		DirtyChunkStore store = stableStore(1);
+		AtomicInteger recalculations = new AtomicInteger();
+		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> {
+			recalculations.incrementAndGet();
+			return true;
+		});
+
+		assertEquals(1, processor.processTick(1).submitted());
+		for (int tick = 0; tick < DirtyChunkProcessor.RECALCULATION_TIMEOUT_TICKS; tick++) {
+			processor.processTick(0);
+		}
+
+		assertEquals(0, store.statistics().inFlight());
+		assertEquals(1, store.statistics().queuedStable());
+		assertEquals(1, processor.statistics().failed());
+		assertEquals(1, processor.processTick(1).submitted());
+		assertEquals(2, recalculations.get());
+	}
+
+	@Test
 	void rejectsNegativeBudgetAndMissingDependencies() {
 		DirtyChunkStore store = stableStore(1);
 		DirtyChunkProcessor processor = new DirtyChunkProcessor(store, chunk -> true, chunk -> true);

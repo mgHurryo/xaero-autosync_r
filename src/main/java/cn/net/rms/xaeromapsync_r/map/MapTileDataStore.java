@@ -96,32 +96,32 @@ public final class MapTileDataStore {
 	 */
 	public boolean putAsynchronously(MapTile tile, Consumer<Boolean> completion) {
 		if (tile == null || completion == null) throw new IllegalArgumentException("Tile and completion callback are required");
-		Path target;
-		ExecutorService activeWriter;
 		synchronized (this) {
-			target = path(tile.dimension(), tile.chunkX(), tile.chunkZ());
-			activeWriter = writerFor(tile.dimension(), tile.chunkX(), tile.chunkZ());
-		}
-		if (target == null || activeWriter == null) return false;
-		try {
-			activeWriter.execute(() -> {
-				preserveCurrentBody(tile);
-				boolean successful = write(target, tile);
-				if (successful) {
-					synchronized (MapTileDataStore.this) {
-						memory.put(key(tile.dimension(), tile.chunkX(), tile.chunkZ()), tile);
+			Path target = path(tile.dimension(), tile.chunkX(), tile.chunkZ());
+			ExecutorService activeWriter = writerFor(tile.dimension(), tile.chunkX(), tile.chunkZ());
+			if (target == null || activeWriter == null) return false;
+			try {
+				// Keep writer selection and submission atomic with stop(). Once accepted,
+				// graceful shutdown preserves the task and its completion callback.
+				activeWriter.execute(() -> {
+					preserveCurrentBody(tile);
+					boolean successful = write(target, tile);
+					if (successful) {
+						synchronized (MapTileDataStore.this) {
+							memory.put(key(tile.dimension(), tile.chunkX(), tile.chunkZ()), tile);
+						}
 					}
-				}
-				try {
-					completion.accept(successful);
-				} catch (RuntimeException exception) {
-					XaeroMapsync_r.LOGGER.warn("Map tile completion callback failed for {}", target, exception);
-				}
-			});
-			return true;
-		} catch (RejectedExecutionException exception) {
-			XaeroMapsync_r.LOGGER.debug("map_sync event=tile_writer_backpressure target={} action=retry_later", target);
-			return false;
+					try {
+						completion.accept(successful);
+					} catch (RuntimeException exception) {
+						XaeroMapsync_r.LOGGER.warn("Map tile completion callback failed for {}", target, exception);
+					}
+				});
+				return true;
+			} catch (RejectedExecutionException exception) {
+				XaeroMapsync_r.LOGGER.debug("map_sync event=tile_writer_backpressure target={} action=retry_later", target);
+				return false;
+			}
 		}
 	}
 

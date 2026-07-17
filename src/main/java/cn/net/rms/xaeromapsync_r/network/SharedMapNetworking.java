@@ -143,8 +143,8 @@ public final class SharedMapNetworking {
 				LocalTileReadyPayload payload = LocalTileReadyPayload.read(buffer);
 				server.execute(() -> runForAcceptedClient(player, () -> handleLocalTileReady(player, payload)));
 			} catch (RuntimeException exception) {
-				XaeroMapsync_r.LOGGER.warn("map_sync event=client_tile_hint_rejected player={} reason=malformed",
-						player.getGameProfile().getName(), exception);
+				XaeroMapsync_r.LOGGER.warn("map_sync event=client_tile_hint_rejected player={} reason={}",
+						player.getGameProfile().getName(), "malformed", exception);
 			}
 		});
 		ServerPlayNetworking.registerGlobalReceiver(C2S_LOCAL_TILE_DATA, (server, player, handler, buffer, responseSender) -> {
@@ -172,8 +172,8 @@ public final class SharedMapNetworking {
 				server.execute(() -> runForAcceptedClient(player, () -> handleLocalTileData(player, payload)));
 			} catch (RuntimeException exception) {
 				XaeroMapsync_r.LOGGER.warn(
-						"map_sync event=client_tile_upload_rejected player={} bytes={} reason=malformed",
-						player.getGameProfile().getName(), packetBytes, exception);
+						"map_sync event=client_tile_upload_rejected player={} bytes={} reason={}",
+						player.getGameProfile().getName(), packetBytes, "malformed", exception);
 			}
 		});
 		ServerPlayNetworking.registerGlobalReceiver(C2S_TRANSFER_ACK, (server, player, handler, buffer, responseSender) -> {
@@ -292,8 +292,8 @@ public final class SharedMapNetworking {
 				try {
 					ClientTransfers.MANAGER.accept(payload);
 				} catch (RuntimeException exception) {
-					XaeroMapsync_r.LOGGER.warn("map_sync event=client_transfer_part_rejected transfer_id={} part_index={}",
-							payload.transferId(), payload.partIndex(), exception);
+					XaeroMapsync_r.LOGGER.warn("map_sync event=client_transfer_part_rejected transfer_id={} part_index={} reason={}",
+							payload.transferId(), payload.partIndex(), "malformed", exception);
 				}
 			});
 		});
@@ -375,8 +375,8 @@ public final class SharedMapNetworking {
 							}
 							completion.accept(true);
 						} catch (RuntimeException exception) {
-							XaeroMapsync_r.LOGGER.warn("map_sync event=client_tile_send_failed dimension={} chunk_x={} chunk_z={}",
-									tile.dimension(), tile.chunkX(), tile.chunkZ(), exception);
+							XaeroMapsync_r.LOGGER.warn("map_sync event=client_tile_send_failed dimension={} chunk_x={} chunk_z={} reason={}",
+									tile.dimension(), tile.chunkX(), tile.chunkZ(), "send_failed", exception);
 							completion.accept(false);
 						}
 					});

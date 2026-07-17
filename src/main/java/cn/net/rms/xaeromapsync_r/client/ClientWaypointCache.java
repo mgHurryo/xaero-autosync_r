@@ -22,7 +22,7 @@ public final class ClientWaypointCache {
 	}
 
 	public synchronized void delete(PublicWaypoint waypoint) {
-		waypoints.put(waypoint.id(), waypoint);
+		waypoints.remove(waypoint.id());
 	}
 
 	public synchronized int activeCount() {

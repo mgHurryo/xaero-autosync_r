@@ -56,6 +56,18 @@ final class TransferSessionTest {
 				() -> session.acknowledge(new TransferAckPayload(parts.get(0).transferId(), 1), 1L));
 	}
 
+	@Test
+	void restartsTimeoutWindowWhenWallClockMovesBackwards() {
+		List<TransferPartPayload> parts = TransferFragmenter.fragment(UUID.randomUUID(), new byte[] {1});
+		TransferSession session = new TransferSession(parts, 10L, 1);
+		session.start(100L);
+
+		assertEquals(TransferSession.Status.ACTIVE, session.checkTimeout(90L));
+		assertEquals(TransferSession.Status.ACTIVE, session.checkTimeout(99L));
+		assertEquals(TransferSession.Status.TIMED_OUT, session.checkTimeout(100L));
+		assertThrows(IllegalArgumentException.class, () -> session.retry(-1L));
+	}
+
 	private static List<Integer> indexes(List<TransferPartPayload> parts) {
 		return parts.stream().map(TransferPartPayload::partIndex).toList();
 	}

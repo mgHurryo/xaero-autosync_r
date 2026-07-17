@@ -53,6 +53,14 @@ final class ClientMapTileCacheTest {
 	}
 
 	@Test
+	void cachedTileIdentityRequiresMatchingRevisionAndHashValues() {
+		assertTrue(ClientMapTileCache.sameCachedTile(7L, 7L, Long.valueOf(42L), 42L));
+		assertFalse(ClientMapTileCache.sameCachedTile(8L, 7L, Long.valueOf(42L), 42L));
+		assertFalse(ClientMapTileCache.sameCachedTile(7L, 7L, Long.valueOf(41L), 42L));
+		assertFalse(ClientMapTileCache.sameCachedTile(7L, 7L, null, 42L));
+	}
+
+	@Test
 	void tileBodiesSurviveRestartWithoutTrustingTheOldAppliedRevision() throws Exception {
 		MapTile tile = tile("minecraft:overworld", 4, -7);
 		MapTileIndexEntry entry = new MapTileIndexEntry(tile.dimension(), tile.chunkX(), tile.chunkZ(),

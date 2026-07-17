@@ -280,6 +280,9 @@ public final class SharedMapCommands {
 		try {
 			SharedMapServer.permissions().validateDelete(actor, current);
 			PublicWaypoint tombstone = SharedMapServer.waypoints().delete(waypointId, System.currentTimeMillis());
+			if (tombstone == null) {
+				throw new IllegalStateException("Waypoint no longer exists");
+			}
 			SharedMapServer.waypoints().save(source.getServer());
 			SharedMapNetworking.broadcastWaypointDelete(source.getServer(), current, tombstone);
 			SharedMapServer.access().audit().record(actor, "waypoint.admin_delete", true, region, waypointId, "revision=" + tombstone.revision());

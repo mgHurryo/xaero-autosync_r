@@ -110,7 +110,7 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 					Object existing = managed.putIfAbsent(id, xaeroWaypoint);
 					if (existing != null && existing != xaeroWaypoint) {
 						Object boundSource = boundSources.get(id);
-						if (boundSource == xaeroWaypoint && boundSource != existing) {
+						if (boundSource == xaeroWaypoint) {
 							managed.put(id, xaeroWaypoint);
 							remove.add(existing);
 						} else {
@@ -369,9 +369,10 @@ final class ReflectiveXaeroWaypointAdapter implements XaeroWaypointAdapter {
 	private XaeroWaypointBridge.SelectedWaypoint selectedWaypoint(Object screen) {
 		try {
 			return bridge.selectedWaypoint(screen);
-		} catch (IllegalArgumentException exception) {
-			throw exception;
 		} catch (RuntimeException | ReflectiveOperationException | LinkageError exception) {
+			if (exception instanceof IllegalArgumentException invalidSelection) {
+				throw invalidSelection;
+			}
 			String message = "Failed to read the selected Xaero waypoint";
 			XaeroMapsync_r.LOGGER.error(message, exception);
 			throw new IllegalStateException(message + ": " + exception.getMessage(), exception);

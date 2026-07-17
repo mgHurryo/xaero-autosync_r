@@ -63,6 +63,34 @@ final class ReflectiveXaeroWaypointAdapterTest {
 	}
 
 	@Test
+	void boundCreatorSourceWinsWhenDuplicateManagedIdsAreScannedFirst() {
+		UUID id = UUID.randomUUID();
+		FakePoint duplicate = managed(id, "Duplicate", 1, 64, 2, "D", 4);
+		FakePoint boundSource = managed(id, "Bound", 5, 70, 6, "B", 8);
+		FakeBridge bridge = new FakeBridge(duplicate, boundSource);
+		bridge.select(boundSource, "default", OVERWORLD);
+		ReflectiveXaeroWaypointAdapter adapter = adapter(bridge, true);
+		XaeroWaypointMutation mutation = adapter.prepareShare(new Object(), WaypointVisibility.PUBLIC, List.of(),
+				PLAYER_ID, "Builder");
+
+		XaeroWaypointReconcileResult result = adapter.reconcile(List.of(withServerState(mutation.waypoint(), 5L)));
+
+		assertEquals(id, mutation.waypoint().id());
+		assertEquals(1, result.deleted());
+		assertEquals(List.of(boundSource), bridge.publicPoints());
+	}
+
+	@Test
+	void selectionValidationFailureRemainsAnIllegalArgumentException() {
+		ReflectiveXaeroWaypointAdapter adapter = adapter(new FakeBridge(), true);
+
+		IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+				() -> adapter.prepareShare(new Object(), WaypointVisibility.PUBLIC, List.of(), PLAYER_ID, "Builder"));
+
+		assertEquals("Select exactly one Xaero waypoint", failure.getMessage());
+	}
+
+	@Test
 	void reconcileDoesNotSaveWhenNoValuesChanged() {
 		UUID id = UUID.randomUUID();
 		PublicWaypoint waypoint = waypoint(id, UUID.randomUUID(), "Spawn", OVERWORLD, 1, 64, 2, "S", 15, WaypointVisibility.PUBLIC, false, 1L);

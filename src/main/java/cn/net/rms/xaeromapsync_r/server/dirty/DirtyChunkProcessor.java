@@ -63,7 +63,7 @@ public final class DirtyChunkProcessor {
 			int newChunksInPage = 0;
 			for (int chunkIndex = 0; chunkIndex < chunks.size(); chunkIndex++) {
 				DirtyChunkStore.StableDirtyChunk chunk = chunks.get(chunkIndex);
-				String chunkKey = chunk.dimension() + '\0' + chunk.chunkX() + '\0' + chunk.chunkZ();
+				String chunkKey = chunk.dimension() + "\u0000" + chunk.chunkX() + "\u0000" + chunk.chunkZ();
 				if (!visited.add(chunkKey)) {
 					if (store.defer(chunk)) deferredThisTick++;
 					else staleThisTick++;

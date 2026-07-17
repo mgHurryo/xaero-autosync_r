@@ -32,6 +32,17 @@ public final class MapTileDataStoreTest {
 	}
 
 	@Test
+	void reportsWriteCapacityOnlyWhileStarted() {
+		MapTileDataStore store = new MapTileDataStore();
+		assertFalse(store.hasWriteCapacity("minecraft:overworld", 0, 0));
+
+		store.start(tempDir);
+		assertTrue(store.hasWriteCapacity("minecraft:overworld", 0, 0));
+		store.stop();
+		assertFalse(store.hasWriteCapacity("minecraft:overworld", 0, 0));
+	}
+
+	@Test
 	void persistsAndReloadsVersionedSurfaceTile() {
 		MapTile tile = tile("minecraft:overworld", -2, 7, 10);
 		MapTileDataStore writer = new MapTileDataStore();

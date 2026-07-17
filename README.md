@@ -17,12 +17,12 @@ The current release is `3.0.0-alpha.6`, with network protocol `v11` and map stor
 | Minecraft | `1.17.1` |
 | Fabric Loader | `>= 0.19.3` |
 | Fabric API | `0.46.1+1.17` |
-| Xaero's World Map | `1.25.1` |
-| Xaero's Minimap | `22.11.1` |
+| Xaero's World Map | `1.14.5.2` through `1.37.8` (74 Fabric releases) |
+| Xaero's Minimap | `21.12.5.1` through `23.9.7` (80 Fabric releases) |
 | Mod runtime | Java `16+`; local run tasks use Java 17 |
 | Build environment | JDK 21; sources compile to the Java 16 target |
 
-Xaero integration uses reflective adapters. If the detected version or reflection contract does not match, the corresponding adapter is disabled instead of writing an unknown format.
+Xaero integration uses adaptive reflective adapters for every published Fabric release targeting Minecraft 1.17.1. If the detected version or reflection contract does not match, the corresponding adapter is disabled instead of writing an unknown format.
 
 ## Core capabilities
 
@@ -34,6 +34,7 @@ Xaero integration uses reflective adapters. If the detected version or reflectio
 - Keeps native local Xaero output authoritative for loaded areas. Remote data only fills unfinished local areas and is committed atomically by region.
 - Lets online clients participate in gap recovery. Archived remote tiles use fill-only merging and never overwrite an existing server body.
 - Supports PUBLIC and TEAM waypoints, immutable locking, deletion tombstones, regional permissions, quotas, and audit logs.
+- Supports the published Minecraft 1.17.1 Fabric ranges of Xaero World Map and Xaero Minimap through validated reflection contracts.
 - Uses mixins to collect block, TNT, explosion, piston, and light activity, maintaining STORM/COOLDOWN state for 8x8-chunk regions and adapting background work to MSPT.
 - Provides administrator commands for bandwidth budgets, task suspension, regional control, tracing, and storage maintenance.
 
@@ -63,12 +64,12 @@ Xaero integration uses reflective adapters. If the detected version or reflectio
 | `src/test/java/` | Tests for maps, networking, clients, servers, permissions, activity, dirty processing, and Xaero adapters. |
 | `docs/` | Atomic map sync, release/rollback, pull request, and three-process local integration documentation. |
 | `scripts/` | PowerShell scripts that prepare and start one server and two isolated clients. |
-| `.github/workflows/` | Gradle build, pinned Xaero JAR verification, and Qodana static analysis. |
-| `xaeromap-origin/` | Git-ignored pinned Xaero JARs used by local integration runs. |
+| `.github/workflows/` | Gradle build, representative Xaero Fabric JAR verification, and Qodana static analysis. |
+| `xaeromap-origin/` | Git-ignored supported Xaero Fabric JARs used by compatibility and local integration tests. |
 
 ## Installation and use
 
-Install Fabric Loader, Fabric API, and this mod on the server. Clients that view the shared map or manage shared waypoints also need the pinned Xaero World Map and Xaero Minimap versions.
+Install Fabric Loader, Fabric API, and this mod on the server. Clients that view the shared map or manage shared waypoints also need supported Minecraft 1.17.1 Fabric releases of Xaero World Map and Xaero Minimap.
 
 1. Put the built mod JAR in the server and client `mods/` directories.
 2. Start once and review the generated server and client configuration files.
@@ -164,7 +165,7 @@ Linux/macOS:
 ./gradlew clean build
 ```
 
-Artifacts are written to `build/libs/`. The current test tree contains 51 test source files and 277 JUnit `@Test` cases covering protocol payloads, transfer assembly, compression, Merkle trees, patches, tile storage, client coordination, server scheduling, permissions, activity state, dirty queues, and Xaero reflection adapters.
+Artifacts are written to `build/libs/`. The current suite contains 283 JUnit tests covering protocol payloads, transfer assembly, compression, Merkle trees, patches, tile storage, client coordination, server scheduling, permissions, activity state, dirty queues, and Xaero reflection adapters. See [`docs/xaero-compatibility.md`](docs/xaero-compatibility.md) for the supported version matrix.
 
 The local end-to-end harness starts one server and two isolated clients:
 
@@ -176,7 +177,7 @@ The local end-to-end harness starts one server and two isolated clients:
 
 The server is bound to `127.0.0.1` and uses offline-mode test identities. Never expose it to a network. See [`docs/local-integration-test.md`](docs/local-integration-test.md) for the full acceptance sequence.
 
-CI uses JDK 21 to validate the Gradle Wrapper, download and SHA-256-check the pinned Xaero JARs, run `gradle build`, and execute Qodana JVM static analysis.
+CI uses JDK 21 to validate the Gradle Wrapper, download and SHA-256-check representative Xaero Fabric JARs, run `gradle build`, and execute Qodana JVM static analysis.
 
 ## Security boundaries and limitations
 
@@ -186,12 +187,13 @@ CI uses JDK 21 to validate the Gradle Wrapper, download and SHA-256-check the pi
 - Map uploads must pass handshake, dimension, format, renderability, size, and rate-limit validation.
 - Background map work reads only Minecraft objects already loaded on the main thread and does not force-load chunks for synchronization.
 - Shared waypoints are immutable. Deletion does not require creator ownership; the server checks the known revision and the client asks for confirmation before submitting it.
-- The pinned Xaero versions are a compatibility boundary. Upgrading Xaero requires an adapter update and full regression testing.
+- The documented Xaero Fabric ranges and validated reflection contracts are compatibility boundaries. Versions outside them require an adapter update and full regression testing.
 - This is an alpha release. Validate it with backups or in staging before a gradual rollout.
 
 ## Related documentation
 
 - [`docs/atomic-map-sync-v6.md`](docs/atomic-map-sync-v6.md): protocol v11 / map format v6 lifecycle, observability, release, and rollback.
+- [`docs/xaero-compatibility.md`](docs/xaero-compatibility.md): supported Xaero Fabric releases and binary signature strategy.
 - [`docs/local-integration-test.md`](docs/local-integration-test.md): three-process local integration and manual acceptance checklist.
 - [`docs/pr-description.md`](docs/pr-description.md): pull request description for native client tile publication.
 - [`docs/pr-atomic-map-sync-v6.md`](docs/pr-atomic-map-sync-v6.md): pull request description for the gap recovery protocol change.

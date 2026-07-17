@@ -985,7 +985,6 @@ public final class SharedMapNetworking {
 				player.getGameProfile().getName(), request.dimension(), request.chunkX(), request.chunkZ(),
 				request.knownRevision());
 		MapTile tile = SharedMapServer.tileData().find(request.dimension(), request.chunkX(), request.chunkZ()).orElse(null);
-		byte[] preparedSurfacePayload = null;
 		if (tile == null || !tile.hasRenderableSurface()) {
 			if (!SharedMapServer.exploredChunks().isExplored(request.dimension(), request.chunkX(), request.chunkZ())) {
 				sendTileUnavailable(player, request, "Tile is not explored");
@@ -1001,9 +1000,8 @@ public final class SharedMapNetworking {
 		// An explicit request means the client has the index entry but not the tile body.
 		// The index revision is therefore not proof that the body was already applied.
 		try {
-			TileDataPayload payload = preparedSurfacePayload == null
-					? TileDataPayload.fromTile(tile, entry.revision(), SharedMapConfig.compression())
-					: new TileDataPayload(tile, entry.revision(), SharedMapConfig.compression(), preparedSurfacePayload);
+			TileDataPayload payload = TileDataPayload.fromTile(
+					tile, entry.revision(), SharedMapConfig.compression());
 			XaeroMapsync_r.LOGGER.debug("Sending requested tile to {} dimension={} chunk={} {} revision={} hash={} payloadBytes={}",
 					player.getGameProfile().getName(), tile.dimension(), tile.chunkX(), tile.chunkZ(),
 					entry.revision(), Long.toUnsignedString(tile.contentHash()), payload.surfacePayload().length);
@@ -1371,13 +1369,18 @@ public final class SharedMapNetworking {
 	}
 
 	private static void auditWaypoint(SharedMapActor actor, String action, boolean success, PublicWaypoint waypoint, String detail) {
-		RegionKey region = null;
+		if (waypoint == null) {
+			SharedMapServer.access().audit().record(actor, action, success, null, null, detail);
+			return;
+		}
+		RegionKey region;
 		try {
 			region = SharedMapServer.permissions().regionOf(waypoint);
 		} catch (RuntimeException exception) {
+			region = null;
 			// Invalid coordinates are already represented by the failed audit detail.
 			XaeroMapsync_r.LOGGER.warn("Failed to resolve waypoint audit region action={} waypoint_id={}",
-					action, waypoint == null ? null : waypoint.id(), exception);
+					action, waypoint.id(), exception);
 		}
 		SharedMapServer.access().audit().record(actor, action, success, region, waypoint.id(), detail);
 	}

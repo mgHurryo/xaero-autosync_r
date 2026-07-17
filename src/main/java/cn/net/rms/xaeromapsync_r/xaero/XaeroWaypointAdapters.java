@@ -6,8 +6,6 @@ import net.fabricmc.loader.api.ModContainer;
 import net.minecraft.client.Minecraft;
 
 public final class XaeroWaypointAdapters {
-	public static final String SUPPORTED_MINIMAP_VERSION = "22.11.1";
-
 	private XaeroWaypointAdapters() {
 	}
 
@@ -18,8 +16,9 @@ public final class XaeroWaypointAdapters {
 			return unavailable("Xaero's Minimap is not loaded");
 		}
 		String version = minimap.getMetadata().getVersion().getFriendlyString();
-		if (!SUPPORTED_MINIMAP_VERSION.equals(version)) {
-			return unavailable("Unsupported Xaero's Minimap version " + version + "; required " + SUPPORTED_MINIMAP_VERSION);
+		if (!XaeroCompatibility.supportsMinimap(version)) {
+			return unavailable("Unsupported Xaero's Minimap version " + version + "; supported "
+					+ XaeroCompatibility.minimapRange() + " for Minecraft 1.17.1");
 		}
 
 		try {

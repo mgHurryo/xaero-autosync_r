@@ -45,7 +45,7 @@ public final class MerkleTreeBuilder {
 				for (MerkleNode child : group.getValue()) {
 					int slotX = Math.floorMod(child.nodeX(), GROUP_SIZE);
 					int slotZ = Math.floorMod(child.nodeZ(), GROUP_SIZE);
-					hash = MapTileHasher.combine(hash, slotZ * GROUP_SIZE + slotX, child.hash());
+					hash = MapTileHasher.combine(hash, (long) slotZ * GROUP_SIZE + slotX, child.hash());
 					childCount += child.childCount();
 				}
 				NodeKey key = group.getKey();

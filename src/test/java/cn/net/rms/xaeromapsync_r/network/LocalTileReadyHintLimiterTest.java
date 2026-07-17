@@ -1,6 +1,8 @@
 package cn.net.rms.xaeromapsync_r.network;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -24,6 +26,13 @@ final class LocalTileReadyHintLimiterTest {
 		assertEquals(LocalTileReadyHintLimiter.Result.ACCEPTED, limiter.acquire(PLAYER, hint, 500L));
 		limiter.remove(PLAYER);
 		assertEquals(LocalTileReadyHintLimiter.Result.ACCEPTED, limiter.acquire(PLAYER, hint, 501L));
+	}
+
+	@Test
+	void duplicateCheckHandlesMissingAndReversedTimestamps() {
+		assertTrue(LocalTileReadyHintLimiter.isDuplicate(100L, 200L, 500L));
+		assertFalse(LocalTileReadyHintLimiter.isDuplicate(null, 200L, 500L));
+		assertFalse(LocalTileReadyHintLimiter.isDuplicate(300L, 200L, 500L));
 	}
 
 	@Test

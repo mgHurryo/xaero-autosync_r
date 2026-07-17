@@ -159,8 +159,8 @@ public final class AtomicPatchCoordinator {
 						return;
 					}
 					transaction.remoteTiles = List.copyOf(remote);
-					transaction.forcedRemote = localGenerating && localWaitExpired;
-					transition(transaction, Phase.COMMITTING, localGenerating && localWaitExpired
+					transaction.forcedRemote = localGenerating;
+					transition(transaction, Phase.COMMITTING, localGenerating
 							? "local-generation-timeout-local-authoritative"
 							: remote.isEmpty() ? "local-authoritative" : "xaero-region-ready");
 				}

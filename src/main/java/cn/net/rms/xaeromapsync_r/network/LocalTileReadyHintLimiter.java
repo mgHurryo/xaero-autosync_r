@@ -50,13 +50,19 @@ final class LocalTileReadyHintLimiter {
 
 		HintKey key = new HintKey(hint.dimension(), hint.chunkX(), hint.chunkZ(), hint.contentHash());
 		Long previous = state.recentHints.get(key);
-		if (previous != null && nowMillis >= previous && nowMillis - previous < duplicateCooldownMillis) {
+		if (isDuplicate(previous, nowMillis, duplicateCooldownMillis)) {
 			return Result.DUPLICATE;
 		}
 		state.recentHints.remove(key);
 		state.recentHints.put(key, nowMillis);
 		pruneRecentHints(state, nowMillis);
 		return Result.ACCEPTED;
+	}
+
+	static boolean isDuplicate(Long previous, long nowMillis, long cooldownMillis) {
+		if (previous == null) return false;
+		long previousMillis = previous.longValue();
+		return nowMillis >= previousMillis && nowMillis - previousMillis < cooldownMillis;
 	}
 
 	synchronized void remove(UUID playerId) {

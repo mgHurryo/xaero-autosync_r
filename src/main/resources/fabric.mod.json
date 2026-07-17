@@ -3,7 +3,7 @@
 	"id": "xaero-mapsync_r",
 	"version": "${version}",
 	"name": "Xaero Map Sync",
-	"description": "Shared server map and public waypoint synchronization for Minecraft 1.17.1 Fabric servers using pinned Xaero map versions.",
+	"description": "Shared server map and public waypoint synchronization for Minecraft 1.17.1 Fabric servers across all published Xaero map versions.",
 	"authors": [
 		"RMS"
 	],
@@ -31,7 +31,7 @@
 		"fabric": "*"
 	},
 	"suggests": {
-		"xaeroworldmap": "1.25.1",
-		"xaerominimap": "22.11.1"
+		"xaeroworldmap": ">=1.14.5.2 <=1.37.8",
+		"xaerominimap": ">=21.12.5.1 <=23.9.7"
 	}
 }

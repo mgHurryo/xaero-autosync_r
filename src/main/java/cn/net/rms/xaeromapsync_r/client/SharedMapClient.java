@@ -81,12 +81,11 @@ public final class SharedMapClient {
 	private static final int LOCAL_TILE_UPLOAD_RADIUS_MARGIN = 1;
 	private static final int MAX_LOCAL_TILE_UPLOADS_PER_SCAN = 64;
 	private static final int MAX_LOCAL_TILE_SCANS_PER_TICK = 256;
-	private static final int LOCAL_TILE_UPLOAD_SCAN_INTERVAL_TICKS = 1;
 	private static final long LOCAL_UPLOAD_TICK_BUDGET_NANOS = 2_000_000L;
 	private static final int XAERO_REGION_CHUNKS_PER_SIDE = 32;
 	private static final int XAERO_REGION_TILE_COUNT = XAERO_REGION_CHUNKS_PER_SIDE * XAERO_REGION_CHUNKS_PER_SIDE;
 	private static final int MAX_ARCHIVE_TILES_PER_TICK = 64;
-	private static volatile int tileRequestsInFlight;
+	private static int tileRequestsInFlight;
 	private static final Object CACHE_LOOKUP_LOCK = new Object();
 	private static volatile int tileCacheLookupsInFlight;
 	private static volatile boolean handlingTileDataBatch;
@@ -384,7 +383,8 @@ public final class SharedMapClient {
 	}
 
 	static boolean isStaleTileResponse(Long requestedRevision, long receivedRevision) {
-		return requestedRevision != null && receivedRevision < requestedRevision;
+		if (requestedRevision == null) return false;
+		return receivedRevision < requestedRevision.longValue();
 	}
 
 	private static void processPendingTileApplications() {
@@ -518,7 +518,7 @@ public final class SharedMapClient {
 	}
 
 	private static void reportNativeLocalTiles(long deadline) {
-		if (clientTicks % LOCAL_TILE_UPLOAD_SCAN_INTERVAL_TICKS != 0 || !connectedToSharedMapServer || !previousMapSyncEnabled
+		if (!connectedToSharedMapServer || !previousMapSyncEnabled
 				|| mapAdapter == null || !mapAdapter.isAvailable()) return;
 		if (System.nanoTime() >= deadline) return;
 		Minecraft minecraft = Minecraft.getInstance();
@@ -839,17 +839,17 @@ public final class SharedMapClient {
 			String key = tileKey(entry.dimension(), entry.chunkX(), entry.chunkZ());
 			if (TILE_DATA.hasRevision(entry.dimension(), entry.chunkX(), entry.chunkZ(), entry.revision())) continue;
 			Long targetRevision = QUEUED_TILE_REVISIONS.get(key);
-			if (targetRevision == null || entry.revision() > targetRevision) {
-				if (targetRevision == null && !canTrackTileTarget(QUEUED_TILE_REVISIONS.size(), MAX_PENDING_TILE_TARGETS)) {
+			if (targetRevision == null) {
+				if (!canTrackTileTarget(QUEUED_TILE_REVISIONS.size(), MAX_PENDING_TILE_TARGETS)) {
 					mapSyncIncomplete = true;
 					retryMapSyncAtMillis = System.currentTimeMillis() + 5_000L;
 					deferred++;
 					continue;
 				}
-				QUEUED_TILE_REVISIONS.put(key, entry.revision());
-				TILE_CACHE_LOOKUP_QUEUE.add(entry);
-				queued++;
-			}
+			} else if (entry.revision() <= targetRevision.longValue()) continue;
+			QUEUED_TILE_REVISIONS.put(key, entry.revision());
+			TILE_CACHE_LOOKUP_QUEUE.add(entry);
+			queued++;
 		}
 		if (inspected > 0) {
 			XaeroMapsync_r.LOGGER.debug(
@@ -1126,8 +1126,8 @@ public final class SharedMapClient {
 		boolean networkWaiting = tileRequestsInFlight > 0 || mapNodeRequestsInFlight > 0;
 		if (shouldResetMapSync(networkWaiting, now - lastMapProgressMillis)) {
 			XaeroMapsync_r.LOGGER.warn(
-					"Map sync watchdog reset networkWaiting={} millisWithoutProgress={} tileRequestsInFlight={} mapNodeRequestsInFlight={} tileQueue={} nodeQueue={} applyQueue={}",
-					networkWaiting, now - lastMapProgressMillis, tileRequestsInFlight,
+					"Map sync watchdog reset millisWithoutProgress={} tileRequestsInFlight={} mapNodeRequestsInFlight={} tileQueue={} nodeQueue={} applyQueue={}",
+					now - lastMapProgressMillis, tileRequestsInFlight,
 					mapNodeRequestsInFlight, TILE_REQUEST_QUEUE.size(), MAP_NODE_QUEUE.size(),
 					TILE_APPLY_QUEUE.size());
 			resetMapQueues();

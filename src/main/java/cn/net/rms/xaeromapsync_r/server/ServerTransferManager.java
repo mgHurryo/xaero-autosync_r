@@ -7,6 +7,7 @@ import cn.net.rms.xaeromapsync_r.network.TransferPartPayload;
 import cn.net.rms.xaeromapsync_r.network.TransferNackPayload;
 import cn.net.rms.xaeromapsync_r.network.TransferSession;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -71,12 +72,14 @@ public final class ServerTransferManager {
 		}
 		PendingTransfer pending = playerTransfers.get(acknowledgement.transferId());
 		if (pending == null) return;
-		int firstMissing = acknowledgement.missingPartIndexes().stream()
-				.mapToInt(Integer::intValue)
-				.filter(index -> index >= 0 && index < pending.parts.size())
-				.min()
-				.orElse(0);
+		int firstMissing = firstRetransmissionPart(
+				acknowledgement.missingPartIndexes(), pending.parts.size());
 		pending.nextPart = Math.min(pending.nextPart, firstMissing);
+	}
+
+	static int firstRetransmissionPart(List<Integer> missingPartIndexes, int partCount) {
+		int firstMissing = Collections.min(missingPartIndexes);
+		return firstMissing < partCount ? firstMissing : 0;
 	}
 
 	private synchronized void tick(MinecraftServer server) {

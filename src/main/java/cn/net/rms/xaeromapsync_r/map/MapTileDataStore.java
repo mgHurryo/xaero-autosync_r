@@ -56,7 +56,7 @@ public final class MapTileDataStore {
 			return size() > MAX_HISTORICAL_TILES;
 		}
 	};
-	private ExecutorService[] writers;
+	private ThreadPoolExecutor[] writers;
 	private ExecutorService recoveryReader;
 	private Path root;
 
@@ -74,7 +74,7 @@ public final class MapTileDataStore {
 			thread.setPriority(Thread.MIN_PRIORITY);
 			return thread;
 		});
-		writers = new ExecutorService[WRITER_STRIPES];
+		writers = new ThreadPoolExecutor[WRITER_STRIPES];
 		for (int index = 0; index < writers.length; index++) {
 			int stripe = index;
 			writers[index] = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
@@ -187,9 +187,9 @@ public final class MapTileDataStore {
 	}
 
 	public synchronized boolean hasWriteCapacity(String dimension, int chunkX, int chunkZ) {
-		ExecutorService writer = writerFor(dimension, chunkX, chunkZ);
-		return writer instanceof ThreadPoolExecutor
-				&& ((ThreadPoolExecutor) writer).getQueue().remainingCapacity() > 0;
+		ThreadPoolExecutor writer = writerFor(dimension, chunkX, chunkZ);
+		if (writer == null) return false;
+		return writer.getQueue().remainingCapacity() > 0;
 	}
 
 	/**
@@ -363,7 +363,7 @@ public final class MapTileDataStore {
 	}
 
 	public void stop() {
-		ExecutorService[] activeWriters;
+		ThreadPoolExecutor[] activeWriters;
 		ExecutorService activeRecoveryReader;
 		synchronized (this) {
 			activeWriters = writers;
@@ -394,7 +394,7 @@ public final class MapTileDataStore {
 		}
 	}
 
-	private ExecutorService writerFor(String dimension, int chunkX, int chunkZ) {
+	private ThreadPoolExecutor writerFor(String dimension, int chunkX, int chunkZ) {
 		if (writers == null || writers.length == 0) return null;
 		int stripe = Math.floorMod(key(dimension, chunkX, chunkZ).hashCode(), writers.length);
 		return writers[stripe];

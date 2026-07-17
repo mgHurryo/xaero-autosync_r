@@ -13,6 +13,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.AbstractGlassBlock;
 import net.minecraft.world.level.block.BaseFireBlock;
@@ -80,7 +81,7 @@ public final class MapTileDebugRenderer {
 		boolean[] glowing = new boolean[TILE_AREA];
 		boolean[] cave = new boolean[TILE_AREA];
 		List<List<MapTile.Overlay>> overlays = new ArrayList<>(TILE_AREA);
-		Registry<net.minecraft.world.level.biome.Biome> biomeRegistry =
+		Registry<Biome> biomeRegistry =
 				level.registryAccess().registryOrThrow(Registry.BIOME_REGISTRY);
 		BlockPos.MutableBlockPos scanPos = new BlockPos.MutableBlockPos();
 		BlockPos.MutableBlockPos lightPos = new BlockPos.MutableBlockPos();
@@ -97,9 +98,7 @@ public final class MapTileDebugRenderer {
 				baseHeights[index] = surface.baseHeight;
 				topHeights[index] = surface.topHeight;
 				scanPos.set(worldX, surface.topHeight, worldZ);
-				var biomeKey = biomeRegistry.getKey(level.getBiome(scanPos));
-				if (biomeKey == null) throw new IllegalStateException("Biome is not registered at " + scanPos);
-				biomeKeys[index] = biomeKey.toString();
+				biomeKeys[index] = biomeKey(biomeRegistry, level.getBiome(scanPos), scanPos);
 				lightAbove[index] = surface.lightAbove;
 				glowing[index] = isGlowing(surface.baseState);
 				cave[index] = !level.dimensionType().hasSkyLight();
@@ -118,6 +117,12 @@ public final class MapTileDebugRenderer {
 
 	static int surfaceY(int heightmapY) {
 		return heightmapY;
+	}
+
+	static String biomeKey(Registry<Biome> registry, Biome biome, BlockPos pos) {
+		return registry.getResourceKey(biome)
+				.orElseThrow(() -> new IllegalStateException("Biome is not registered at " + pos))
+				.location().toString();
 	}
 
 	private static ColumnSurface scanColumn(ServerLevel level, ChunkAccess chunk, int worldX, int worldZ, int localX,

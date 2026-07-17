@@ -17,6 +17,7 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 	private final Method getCurrentSession;
 	private final Method getWaypointsManager;
 	private final Method getModMain;
+	private final Field modMainInstance;
 	private final Method getCurrentWorld;
 	private final Method getCurrentSet;
 	private final Method getSets;
@@ -60,7 +61,8 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 			throw new NoSuchMethodException("XaeroMinimapSession.getCurrentSession must be static");
 		}
 		getWaypointsManager = requireMethod(sessionClass, "getWaypointsManager", managerClass);
-		getModMain = requireMethod(sessionClass, "getModMain", modMainClass);
+		getModMain = optionalMethod(sessionClass, "getModMain", modMainClass);
+		modMainInstance = getModMain == null ? requireField(modMainClass, "INSTANCE", modMainClass) : null;
 		getCurrentWorld = requireMethod(managerClass, "getCurrentWorld", worldClass);
 		getCurrentSet = requireMethod(worldClass, "getCurrentSet", setClass);
 		getSets = requireMethod(worldClass, "getSets", HashMap.class);
@@ -214,7 +216,10 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 	@Override
 	public void save(Object world) throws ReflectiveOperationException {
 		Object session = invoke(getCurrentSession, null);
-		Object modMain = invoke(getModMain, session);
+		Object modMain = getModMain == null ? modMainInstance.get(null) : invoke(getModMain, session);
+		if (modMain == null) {
+			throw new IllegalStateException("Xaero minimap instance is not initialized");
+		}
 		Object settings = invoke(getSettings, modMain);
 		invoke(saveWaypoints, settings, world);
 	}
@@ -246,6 +251,29 @@ final class ReflectiveXaeroWaypointBridge implements XaeroWaypointBridge {
 			throw new NoSuchMethodException(owner.getName() + "." + name + " has return type " + method.getReturnType().getName() + ", expected " + returnType.getName());
 		}
 		return method;
+	}
+
+	private static Method optionalMethod(Class<?> owner, String name, Class<?> returnType, Class<?>... parameterTypes)
+			throws NoSuchMethodException {
+		Method method;
+		try {
+			method = owner.getMethod(name, parameterTypes);
+		} catch (NoSuchMethodException exception) {
+			return null;
+		}
+		if (method.getReturnType() != returnType) {
+			throw new NoSuchMethodException(owner.getName() + "." + name + " has return type "
+					+ method.getReturnType().getName() + ", expected " + returnType.getName());
+		}
+		return method;
+	}
+
+	private static Field requireField(Class<?> owner, String name, Class<?> type) throws NoSuchFieldException {
+		Field field = owner.getField(name);
+		if (field.getType() != type || !Modifier.isStatic(field.getModifiers())) {
+			throw new NoSuchFieldException(owner.getName() + "." + name + " must be a static " + type.getName());
+		}
+		return field;
 	}
 
 	private static Object invoke(Method method, Object target, Object... arguments) throws ReflectiveOperationException {

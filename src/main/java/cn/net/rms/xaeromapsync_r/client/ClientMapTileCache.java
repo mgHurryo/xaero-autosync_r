@@ -70,7 +70,7 @@ public final class ClientMapTileCache {
 			long cachedRevision = cachedRevisions.getOrDefault(key, -1L);
 			if (revision < cachedRevision) return;
 			Long cachedHash = cachedHashes.get(key);
-			if (revision == cachedRevision && cachedHash != null && cachedHash == tile.contentHash()) return;
+			if (sameCachedTile(revision, cachedRevision, cachedHash, tile.contentHash())) return;
 			cachedRevisions.put(key, revision);
 			cachedHashes.put(key, tile.contentHash());
 		}
@@ -79,6 +79,11 @@ public final class ClientMapTileCache {
 		// The 25 ms background pump batches scheduling. Draining here once per
 		// tile turns a large applied wave into repeated scans of the same pending
 		// map on the render thread.
+	}
+
+	static boolean sameCachedTile(long revision, long cachedRevision, Long cachedHash, long contentHash) {
+		if (revision != cachedRevision || cachedHash == null) return false;
+		return cachedHash.longValue() == contentHash;
 	}
 
 	/** Returns true only when every tile in a possibly reshaped patch is already applied. */

@@ -7,7 +7,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Registry;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.SharedConstants;
@@ -17,6 +23,20 @@ final class MapTileDebugRendererTest {
 	@Test
 	void heightmapSurfaceIsNotMovedDownIntoDirt() {
 		assertEquals(64, MapTileDebugRenderer.surfaceY(64));
+	}
+
+	@Test
+	void biomeKeyUsesTheDynamicRegistryAndRejectsUnknownBiomes() {
+		SharedConstants.tryDetectVersion();
+		Bootstrap.bootStrap();
+		Registry<Biome> registry = RegistryAccess.builtin().registryOrThrow(Registry.BIOME_REGISTRY);
+		Biome plains = Objects.requireNonNull(registry.get(Biomes.PLAINS));
+
+		assertEquals("minecraft:plains", MapTileDebugRenderer.biomeKey(registry, plains, BlockPos.ZERO));
+		BlockPos unknownPosition = new BlockPos(3, 64, 4);
+		IllegalStateException failure = assertThrows(IllegalStateException.class,
+				() -> MapTileDebugRenderer.biomeKey(registry, null, unknownPosition));
+		assertTrue(failure.getMessage().contains(unknownPosition.toString()));
 	}
 
 	@Test

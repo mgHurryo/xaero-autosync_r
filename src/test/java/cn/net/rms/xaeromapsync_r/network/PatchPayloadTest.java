@@ -25,7 +25,7 @@ class PatchPayloadTest {
 			bodies.add(TileDataPayload.fromTile(tile, revision, "zlib"));
 			references.add(new MapPatchManifest.TileReference(tile.chunkX(), tile.chunkZ(), revision, tile.contentHash()));
 		}
-		MapPatchManifest manifest = new MapPatchManifest(key, 77L, 16L, references);
+		MapPatchManifest manifest = new MapPatchManifest(key, Long.MIN_VALUE, 16L, references);
 		PatchDataPayload payload = new PatchDataPayload(manifest, bodies);
 		FriendlyByteBuf dataBuffer = new FriendlyByteBuf(Unpooled.buffer());
 		payload.write(dataBuffer);
@@ -33,12 +33,13 @@ class PatchPayloadTest {
 		assertEquals(16, decoded.tiles().size());
 		assertEquals(manifest.contentHash(), decoded.patch().manifest().contentHash());
 
-		PatchManifestPagePayload page = new PatchManifestPagePayload(9L, 77L, 1, 1, List.of(manifest));
+		PatchManifestPagePayload page = new PatchManifestPagePayload(9L, Long.MIN_VALUE, 1, 1, List.of(manifest));
 		FriendlyByteBuf pageBuffer = new FriendlyByteBuf(Unpooled.buffer());
 		page.write(pageBuffer);
 		PatchManifestPagePayload decodedPage = PatchManifestPagePayload.read(pageBuffer);
 		assertEquals(1, decodedPage.manifests().size());
-		assertEquals(77L, decodedPage.epoch());
+		assertEquals(Long.MIN_VALUE, decodedPage.epoch());
+		assertEquals(Long.MIN_VALUE, decodedPage.manifests().get(0).epoch());
 	}
 
 	private static MapTile tile(int chunkX, int chunkZ) {

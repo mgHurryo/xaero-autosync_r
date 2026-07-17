@@ -25,6 +25,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import cn.net.rms.xaeromapsync_r.map.MerkleNode;
 import cn.net.rms.xaeromapsync_r.map.MerkleNodeAddress;
 import net.fabricmc.api.EnvType;
@@ -406,14 +407,14 @@ public final class SharedMapNetworking {
 		}
 		net.minecraft.server.MinecraftServer server = player.getServer();
 		try {
-			TILE_BATCH_WORKERS.execute(() -> {
+			TILE_BATCH_WORKERS.execute(() -> runManifestPreparationTask(() -> {
 				cn.net.rms.xaeromapsync_r.map.MapPatchCatalog.Snapshot catalogSnapshot =
 						SharedMapServer.patches().snapshot(request.dimension());
 				List<MapPatchManifest> sorted = cn.net.rms.xaeromapsync_r.server.ViewportPatchPrioritizer.sort(
 						catalogSnapshot.manifests(), request.centerChunkX(), request.centerChunkZ(),
 						request.motionX(), request.motionZ());
 				long currentEpoch = catalogSnapshot.epoch();
-				int cursor = request.expectedEpoch() != 0L && request.expectedEpoch() != currentEpoch ? 0 : request.cursor();
+				int cursor = resumeManifestCursor(request.cursor(), request.expectedEpoch(), currentEpoch);
 				cursor = Math.min(cursor, sorted.size());
 				int nextCursor = Math.min(sorted.size(), cursor + PatchManifestPagePayload.MAX_MANIFESTS);
 				PatchManifestPagePayload page = new PatchManifestPagePayload(request.syncId(), currentEpoch, nextCursor,
@@ -423,11 +424,25 @@ public final class SharedMapNetworking {
 				} catch (RejectedExecutionException ignored) {
 					// Server stopped while the bounded manifest page was prepared.
 				}
-			});
+			}, exception -> XaeroMapsync_r.LOGGER.error(
+					"map_sync event=manifest_prepare_failed trace_id={} player={} sync_id={} dimension={}",
+					traceId(player), player.getGameProfile().getName(), request.syncId(), request.dimension(), exception)));
 		} catch (RejectedExecutionException exception) {
 			XaeroMapsync_r.LOGGER.warn("map_sync event=manifest_rejected player={} reason=worker_queue_full",
 					player.getGameProfile().getName());
 		}
+	}
+
+	static void runManifestPreparationTask(Runnable task, Consumer<RuntimeException> failureSink) {
+		try {
+			task.run();
+		} catch (RuntimeException exception) {
+			failureSink.accept(exception);
+		}
+	}
+
+	static int resumeManifestCursor(int cursor, long expectedEpoch, long currentEpoch) {
+		return cursor > 0 && expectedEpoch != currentEpoch ? 0 : cursor;
 	}
 
 	private static void sendPatchManifestPagePayload(net.minecraft.server.level.ServerPlayer player,
@@ -437,7 +452,7 @@ public final class SharedMapNetworking {
 		page.write(buffer);
 		XaeroMapsync_r.LOGGER.info(
 				"map_sync event=manifest_page_sent trace_id={} player={} sync_id={} epoch={} cursor={} total={} count={} bytes={}",
-				traceId(player), player.getGameProfile().getName(), page.syncId(), page.epoch(), page.nextCursor(), page.totalCount(),
+				traceId(player), player.getGameProfile().getName(), page.syncId(), Long.toUnsignedString(page.epoch()), page.nextCursor(), page.totalCount(),
 				page.manifests().size(), buffer.readableBytes());
 		if (buffer.readableBytes() <= SharedMapConfig.maxPacketBytes()
 				&& SharedMapServer.networkBudget().trySpend(player.getUUID(), buffer.readableBytes())) {
@@ -490,7 +505,8 @@ public final class SharedMapNetworking {
 					failure = "encode-failed";
 					XaeroMapsync_r.LOGGER.error(
 							"map_sync event=patch_prepare_failed trace_id={} player={} patch_id={} epoch={}",
-							traceId(player), player.getGameProfile().getName(), request.key().stableId(), request.epoch(), exception);
+							traceId(player), player.getGameProfile().getName(), request.key().stableId(),
+							Long.toUnsignedString(request.epoch()), exception);
 				}
 				PatchDataPayload prepared = data;
 				String reason = failure;
@@ -517,7 +533,7 @@ public final class SharedMapNetworking {
 		buffer.readBytes(envelope, 1, buffer.readableBytes());
 		XaeroMapsync_r.LOGGER.info("map_sync event=patch_transfer_started trace_id={} player={} patch_id={} epoch={} tiles={} bytes={}",
 				traceId(player), player.getGameProfile().getName(), payload.patch().manifest().key().stableId(),
-				payload.patch().manifest().epoch(), payload.tiles().size(), envelope.length);
+				Long.toUnsignedString(payload.patch().manifest().epoch()), payload.tiles().size(), envelope.length);
 		startTransfer(player, envelope, true);
 	}
 
@@ -527,7 +543,8 @@ public final class SharedMapNetworking {
 		new PatchUnavailablePayload(request.key(), reason == null ? "unavailable" : reason).write(buffer);
 		ServerPlayNetworking.send(player, S2C_PATCH_UNAVAILABLE, buffer);
 		XaeroMapsync_r.LOGGER.warn("map_sync event=patch_unavailable trace_id={} player={} patch_id={} epoch={} reason={}",
-				traceId(player), player.getGameProfile().getName(), request.key().stableId(), request.epoch(), reason);
+				traceId(player), player.getGameProfile().getName(), request.key().stableId(),
+				Long.toUnsignedString(request.epoch()), reason);
 	}
 
 	private static void sendMapIndexIfChanged(net.minecraft.server.level.ServerPlayer player, MapRootHashPayload request) {

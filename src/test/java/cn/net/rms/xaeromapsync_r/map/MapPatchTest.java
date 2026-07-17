@@ -36,9 +36,10 @@ class MapPatchTest {
 	@Test
 	void contentHashDoesNotChangeForUnrelatedCatalogEpoch() {
 		MapPatchKey key = new MapPatchKey("minecraft:overworld", 0, 0);
-		MapPatchManifest first = new MapPatchManifest(key, 7L, 19L, references(key));
+		MapPatchManifest first = new MapPatchManifest(key, Long.MIN_VALUE, 19L, references(key));
 		MapPatchManifest laterCatalog = new MapPatchManifest(key, 8L, 19L, references(key));
 
+		assertEquals(Long.MIN_VALUE, first.epoch());
 		assertEquals(first.contentHash(), laterCatalog.contentHash());
 	}
 

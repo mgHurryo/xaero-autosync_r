@@ -16,7 +16,7 @@ public final class MapPatchManifest {
 
 	public MapPatchManifest(MapPatchKey key, long epoch, long revision, List<TileReference> tiles) {
 		if (key == null) throw new IllegalArgumentException("Patch key is required");
-		if (epoch < 0L || revision < 0L) throw new IllegalArgumentException("Patch epoch and revision must be non-negative");
+		if (revision < 0L) throw new IllegalArgumentException("Patch revision must be non-negative");
 		List<TileReference> ordered = new ArrayList<>(tiles == null ? List.of() : tiles);
 		ordered.sort(Comparator.comparingInt(TileReference::chunkX).thenComparingInt(TileReference::chunkZ));
 		validateComplete(key, ordered);

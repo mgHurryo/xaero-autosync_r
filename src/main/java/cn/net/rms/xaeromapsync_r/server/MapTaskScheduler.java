@@ -191,10 +191,16 @@ public final class MapTaskScheduler {
 		if (previous == null || previous.revision() != entry.revision()) {
 			cn.net.rms.xaeromapsync_r.map.MapPatchKey patchKey =
 					cn.net.rms.xaeromapsync_r.map.MapPatchKey.fromChunk(tile.dimension(), tile.chunkX(), tile.chunkZ());
-			SharedMapServer.patches().manifest(patchKey).ifPresent(manifest -> XaeroMapsync_r.LOGGER.info(
-					"map_sync event=patch_published patch_id={} epoch={} revision={} patch_hash={} tiles={}",
-					manifest.key().stableId(), manifest.epoch(), manifest.revision(),
-					Long.toUnsignedString(manifest.contentHash()), manifest.tiles().size()));
+			try {
+				SharedMapServer.patches().manifest(patchKey).ifPresent(manifest -> XaeroMapsync_r.LOGGER.info(
+						"map_sync event=patch_published patch_id={} epoch={} revision={} patch_hash={} tiles={}",
+						manifest.key().stableId(), Long.toUnsignedString(manifest.epoch()), manifest.revision(),
+						Long.toUnsignedString(manifest.contentHash()), manifest.tiles().size()));
+			} catch (RuntimeException exception) {
+				XaeroMapsync_r.LOGGER.error(
+						"map_sync event=patch_publish_failed patch_id={} dimension={} chunk_x={} chunk_z={}",
+						patchKey.stableId(), tile.dimension(), tile.chunkX(), tile.chunkZ(), exception);
+			}
 		}
 	}
 

@@ -55,26 +55,37 @@ loom {
 
 tasks.register("prepareXaeroTestMods", Sync) {
 	group = "fabric"
-	description = "Copies the pinned local Xaero reference jars into both isolated client run directories."
+	description = "Copies selected supported Xaero 1.17.1 Fabric jars into both isolated client run directories."
 	def referenceDir = layout.projectDirectory.dir("xaeromap-origin")
+	def worldMapJar = providers.gradleProperty("xaeroWorldMapJar")
+			.getOrElse("XaerosWorldMap_1.37.8_Fabric_1.17.1.jar")
+	def minimapJar = providers.gradleProperty("xaeroMinimapJar")
+			.getOrElse("Xaeros_Minimap_23.9.7_Fabric_1.17.1.jar")
 	from(referenceDir) {
-		include "XaerosWorldMap_1.25.1_Fabric_1.17.1.jar"
-		include "Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar"
+		include worldMapJar
+		include minimapJar
 	}
 	into(layout.buildDirectory.dir("prepared-xaero-mods"))
 	doFirst {
-		def expected = [
-			"XaerosWorldMap_1.25.1_Fabric_1.17.1.jar",
-			"Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar"
-		]
+		if (!(worldMapJar ==~ /XaerosWorldMap_[0-9.]+_Fabric_1\.17\.1\.jar/)) {
+			throw new GradleException("Invalid Fabric 1.17.1 World Map fixture name: ${worldMapJar}")
+		}
+		if (!(minimapJar ==~ /Xaeros_Minimap_[0-9.]+_Fabric_1\.17\.1\.jar/)) {
+			throw new GradleException("Invalid Fabric 1.17.1 Minimap fixture name: ${minimapJar}")
+		}
+		def expected = [worldMapJar, minimapJar]
 		expected.each { name ->
 			if (!referenceDir.file(name).asFile.isFile()) {
-				throw new GradleException("Missing pinned Xaero test jar: xaeromap-origin/${name}")
+				throw new GradleException("Missing selected Xaero test jar: xaeromap-origin/${name}")
 			}
 		}
 	}
 	doLast {
 		["run/client-a/mods", "run/client-b/mods"].each { target ->
+			delete fileTree(target) {
+				include "XaerosWorldMap_*_Fabric_1.17.1.jar"
+				include "Xaeros_Minimap_*_Fabric_1.17.1.jar"
+			}
 			copy {
 				from destinationDir
 				into layout.projectDirectory.dir(target)

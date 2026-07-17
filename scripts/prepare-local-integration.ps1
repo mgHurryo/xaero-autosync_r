@@ -1,12 +1,15 @@
-param()
+param(
+    [string]$WorldMapJar = 'XaerosWorldMap_1.37.8_Fabric_1.17.1.jar',
+    [string]$MinimapJar = 'Xaeros_Minimap_23.9.7_Fabric_1.17.1.jar'
+)
 
 $ErrorActionPreference = 'Stop'
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $gradle = Join-Path $workspace 'gradlew.bat'
 
-& $gradle prepareXaeroTestMods
+& $gradle prepareXaeroTestMods "-PxaeroWorldMapJar=$WorldMapJar" "-PxaeroMinimapJar=$MinimapJar"
 if ($LASTEXITCODE -ne 0) {
-    throw "Failed to prepare pinned Xaero test mods"
+	throw "Failed to prepare selected Xaero test mods"
 }
 
 $serverDir = Join-Path $workspace 'run\server'

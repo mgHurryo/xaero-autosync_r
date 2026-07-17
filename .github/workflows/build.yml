@@ -34,18 +34,47 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Prepare pinned Xaero 1.17.1 test mods
+      - name: Prepare Xaero 1.17.1 Fabric compatibility fixtures
         run: |
           mkdir -p xaeromap-origin
-          curl --fail --location --show-error --silent --retry 3 --retry-delay 5 \
-            --output xaeromap-origin/XaerosWorldMap_1.25.1_Fabric_1.17.1.jar \
-            https://edge.forgecdn.net/files/3861/263/XaerosWorldMap_1.25.1_Fabric_1.17.1.jar
-          curl --fail --location --show-error --silent --retry 3 --retry-delay 5 \
-            --output xaeromap-origin/Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar \
-            https://edge.forgecdn.net/files/3861/253/Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar
+          download_fixture() {
+            file_id="$1"
+            file_name="$2"
+            prefix="${file_id%???}"
+            suffix="${file_id: -3}"
+            curl --fail --location --show-error --silent --retry 3 --retry-delay 5 \
+              --output "xaeromap-origin/${file_name}" \
+              "https://edge.forgecdn.net/files/${prefix}/${suffix}/${file_name}"
+          }
+          download_fixture 3379205 XaerosWorldMap_1.14.5.2_Fabric_1.17.1.jar
+          download_fixture 3443619 XaerosWorldMap_1.17.0_Fabric_1.17.1.jar
+          download_fixture 3502018 XaerosWorldMap_1.18.0_Fabric_1.17.1.jar
+          download_fixture 3512813 XaerosWorldMap_1.18.1_Fabric_1.17.1.jar
+          download_fixture 3613294 XaerosWorldMap_1.20.0_Fabric_1.17.1.jar
+          download_fixture 3778445 XaerosWorldMap_1.21.0_Fabric_1.17.1.jar
+          download_fixture 3861263 XaerosWorldMap_1.25.1_Fabric_1.17.1.jar
+          download_fixture 4454656 XaerosWorldMap_1.29.4_Fabric_1.17.1.jar
+          download_fixture 4492950 XaerosWorldMap_1.30.0_Fabric_1.17.1.jar
+          download_fixture 4550328 XaerosWorldMap_1.30.3_Fabric_1.17.1.jar
+          download_fixture 5073775 XaerosWorldMap_1.37.8_Fabric_1.17.1.jar
+          download_fixture 3379204 Xaeros_Minimap_21.12.5.1_Fabric_1.17.1.jar
+          download_fixture 3861253 Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar
+          download_fixture 5060698 Xaeros_Minimap_23.9.7_Fabric_1.17.1.jar
           {
+            echo "4ebbb2b35b93b003a46e7253e4e97eeb03f7b2062594ee93ea697abe2db65d13  xaeromap-origin/XaerosWorldMap_1.14.5.2_Fabric_1.17.1.jar"
+            echo "05fbce96fb0a67935f40cccd5c3bba637c4862b08c9c6ef8bea5cb93501afdd9  xaeromap-origin/XaerosWorldMap_1.17.0_Fabric_1.17.1.jar"
+            echo "0817b795d89b4dcad8e9fb3d96ebd671434ff15457771639866270b576922844  xaeromap-origin/XaerosWorldMap_1.18.0_Fabric_1.17.1.jar"
+            echo "903fa3e0c19b1da64c49ce6bd97ab18086e0db95d0fc005e914f61409ca9f2fa  xaeromap-origin/XaerosWorldMap_1.18.1_Fabric_1.17.1.jar"
+            echo "7c86cc17005edd2a4b6e14bbced810e612e0d5cb2c7993440c453b2bffe208a6  xaeromap-origin/XaerosWorldMap_1.20.0_Fabric_1.17.1.jar"
+            echo "4afe2406ceeeea7cfeeae2261d5577177db331167a31703258a59e54cf0e9220  xaeromap-origin/XaerosWorldMap_1.21.0_Fabric_1.17.1.jar"
             echo "6bd3a5ee416d2dc96881d4b54fda9dba870cec8b8cda03f64594f60bdb02668e  xaeromap-origin/XaerosWorldMap_1.25.1_Fabric_1.17.1.jar"
+            echo "3d98f7062f7767de2e57941b89a668cda8b97cedb318fd94454f12ca69017bc3  xaeromap-origin/XaerosWorldMap_1.29.4_Fabric_1.17.1.jar"
+            echo "4cdf45d3360c13dbb54edbdfba9cd4813f7a05e48395d2f0e91c53778a9bbd93  xaeromap-origin/XaerosWorldMap_1.30.0_Fabric_1.17.1.jar"
+            echo "4e1af5491003730a08e166f25d521c96da9e4f8a828ae51adcafabc200d17231  xaeromap-origin/XaerosWorldMap_1.30.3_Fabric_1.17.1.jar"
+            echo "9e5b54dfb9650dd98096c917e0cdc1a6ce0d5a945dd22781cd9ba93e91ec8bc5  xaeromap-origin/XaerosWorldMap_1.37.8_Fabric_1.17.1.jar"
+            echo "4fc700a984d9c3cb6da6f1090a7c62385dd1a4b3caeff162452c994e8b1b366e  xaeromap-origin/Xaeros_Minimap_21.12.5.1_Fabric_1.17.1.jar"
             echo "98deada43306e4fddc6b45489e1546a66dfba00fa80b12eedb3624fad547f771  xaeromap-origin/Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar"
+            echo "2b7b6fab540db7942caffc807a0a218de4714970a90d851278d5ee1f41857b0f  xaeromap-origin/Xaeros_Minimap_23.9.7_Fabric_1.17.1.jar"
           } > xaeromap-origin/SHA256SUMS
           sha256sum --check xaeromap-origin/SHA256SUMS
 

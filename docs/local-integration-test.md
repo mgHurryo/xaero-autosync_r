@@ -8,10 +8,10 @@ run/client-a
 run/client-b
 ```
 
-Both clients load the pinned reference versions from `xaeromap-origin`:
+By default both clients load the latest supported Minecraft 1.17.1 Fabric reference versions from `xaeromap-origin`:
 
-- Xaero World Map 1.25.1 for Fabric 1.17.1
-- Xaero Minimap 22.11.1 for Fabric 1.17.1
+- Xaero World Map 1.37.8 for Fabric 1.17.1
+- Xaero Minimap 23.9.7 for Fabric 1.17.1
 
 ## Prepare
 
@@ -20,6 +20,16 @@ Run:
 ```powershell
 .\scripts\prepare-local-integration.ps1
 ```
+
+To exercise another supported pair, place both Fabric 1.17.1 JARs in `xaeromap-origin` and pass their exact file names:
+
+```powershell
+.\scripts\prepare-local-integration.ps1 `
+  -WorldMapJar XaerosWorldMap_1.14.5.2_Fabric_1.17.1.jar `
+  -MinimapJar Xaeros_Minimap_21.12.5.1_Fabric_1.17.1.jar
+```
+
+The supported ranges and binary signature families are documented in `docs/xaero-compatibility.md`. Every fixture must contain `fabric.mod.json` for Minecraft 1.17.1; Forge JARs are not supported.
 
 Review the Minecraft EULA and explicitly change `run/server/eula.txt` to `eula=true`. The generated server is offline-mode only for the two local development identities and is bound to `127.0.0.1`; do not expose it to a network.
 

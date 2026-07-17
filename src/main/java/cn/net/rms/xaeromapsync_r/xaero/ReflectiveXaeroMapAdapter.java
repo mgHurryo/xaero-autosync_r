@@ -27,10 +27,9 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 
-/** Reflection-only bridge for Xaero's World Map 1.25.1. */
+/** Reflection-only bridge for all published Xaero World Map Fabric releases for Minecraft 1.17.1. */
 public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 	static final String XAERO_MOD_ID = "xaeroworldmap";
-	static final String SUPPORTED_VERSION = "1.25.1";
 	private static final int TILE_SIDE = 16;
 	private static final int TILE_AREA = TILE_SIDE * TILE_SIDE;
 	private static final Pattern XAERO_REGION_FILE = Pattern.compile("(-?\\d+)_(-?\\d+)\\.zip");
@@ -47,17 +46,18 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				XaeroMapsync_r.LOGGER.info("Xaero World Map is not installed; reflective map injection is disabled");
 			} else {
 				String version = xaero.getMetadata().getVersion().getFriendlyString();
-				XaeroMapsync_r.LOGGER.info("Detected Xaero World Map version {}; supportedVersion={}",
-						version, SUPPORTED_VERSION);
+				XaeroMapsync_r.LOGGER.info("Detected Xaero World Map version {}; supportedRange={}",
+						version, XaeroCompatibility.worldMapRange());
 				if (!supportsVersion(version)) {
-					XaeroMapsync_r.LOGGER.warn("Unsupported Xaero World Map version {}; expected {}. Map injection is disabled", version, SUPPORTED_VERSION);
+					XaeroMapsync_r.LOGGER.warn("Unsupported Xaero World Map version {}; supported {} for Minecraft 1.17.1. Map injection is disabled",
+							version, XaeroCompatibility.worldMapRange());
 				} else {
-					resolvedRuntime = new Xaero1251Runtime();
+					resolvedRuntime = new Xaero1171Runtime();
 					XaeroMapsync_r.LOGGER.info("Xaero World Map reflective runtime initialized for version {}", version);
 				}
 			}
 		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
-			XaeroMapsync_r.LOGGER.error("Xaero World Map 1.25.1 signature validation failed; map injection is disabled", exception);
+			XaeroMapsync_r.LOGGER.error("Xaero World Map 1.17.1 Fabric signature validation failed; map injection is disabled", exception);
 		}
 		runtime = resolvedRuntime;
 		available = resolvedRuntime != null;
@@ -201,7 +201,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 	}
 
 	static boolean supportsVersion(String version) {
-		return SUPPORTED_VERSION.equals(version);
+		return XaeroCompatibility.supportsWorldMap(version);
 	}
 
 	static int regionCoordinate(int chunkCoordinate) {
@@ -323,13 +323,14 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		}
 	}
 
-	private static final class Xaero1251Runtime implements XaeroRuntime {
+	private static final class Xaero1171Runtime implements XaeroRuntime {
 		private final Class<?> mapProcessorClass;
 		private final Class<?> mapRegionClass;
 		private final Class<?> mapTileChunkClass;
 		private final Class<?> xaeroMapTileClass;
 		private final Class<?> mapBlockClass;
-		private final Class<?> biomeKeyClass;
+		private final Class<?> biomeValueClass;
+		private final Class<?> blockStateShortShapeCacheClass;
 
 		private final Method currentSession;
 		private final Method getMapProcessor;
@@ -349,6 +350,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Method getMainFolder;
 		private final Method getCurrentWorldId;
 		private final Method getDetectedRegions;
+		private final Method getWorldSaveDetectedRegions;
 		private final Method getMainFolderPath;
 		private final Method getCurrentMultiworld;
 		private final Method getDetectedRegionX;
@@ -417,7 +419,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Field regionHasHadTerrainField;
 		private final Map<Long, Long> localRegenerationRequests = new LinkedHashMap<>();
 
-		Xaero1251Runtime() throws ReflectiveOperationException {
+		Xaero1171Runtime() throws ReflectiveOperationException {
 			ClassLoader loader = ReflectiveXaeroMapAdapter.class.getClassLoader();
 			Class<?> sessionClass = Class.forName("xaero.map.WorldMapSession", false, loader);
 			mapProcessorClass = Class.forName("xaero.map.MapProcessor", false, loader);
@@ -428,14 +430,15 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			mapBlockClass = Class.forName("xaero.map.region.MapBlock", false, loader);
 			Class<?> overlayClass = Class.forName("xaero.map.region.Overlay", false, loader);
 			Class<?> mapPixelClass = Class.forName("xaero.map.region.MapPixel", false, loader);
-			biomeKeyClass = Class.forName("xaero.map.biome.BiomeKey", false, loader);
-			Class<?> biomeKeyManagerClass = Class.forName("xaero.map.biome.BiomeKeyManager", false, loader);
+			Class<?> legacyBiomeKeyClass = optionalClass("xaero.map.biome.BiomeKey", loader);
+			Class<?> biomeKeyManagerClass = optionalClass("xaero.map.biome.BiomeKeyManager", loader);
+			Class<?> resourceKeyClass = Class.forName("net.minecraft.resources.ResourceKey", false, loader);
+			biomeValueClass = legacyBiomeKeyClass == null ? resourceKeyClass : legacyBiomeKeyClass;
 			Class<?> mapTilePoolClass = Class.forName("xaero.map.pool.MapTilePool", false, loader);
-			Class<?> blockStateShortShapeCacheClass = Class.forName("xaero.map.cache.BlockStateShortShapeCache", false, loader);
+			blockStateShortShapeCacheClass = optionalClass("xaero.map.cache.BlockStateShortShapeCache", loader);
 			Class<?> mapSaveLoadClass = Class.forName("xaero.map.file.MapSaveLoad", false, loader);
 			Class<?> mapWorldClass = Class.forName("xaero.map.world.MapWorld", false, loader);
 			Class<?> mapDimensionClass = Class.forName("xaero.map.world.MapDimension", false, loader);
-			Class<?> resourceKeyClass = Class.forName("net.minecraft.resources.ResourceKey", false, loader);
 			Class<?> regionDetectionClass = Class.forName("xaero.map.file.RegionDetection", false, loader);
 			Class<?> xaeroCoreClass = Class.forName("xaero.map.core.XaeroWorldMapCore", false, loader);
 
@@ -443,9 +446,13 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			getMapProcessor = method(sessionClass, mapProcessorClass, "getMapProcessor");
 			getMapRegion = method(mapProcessorClass, mapRegionClass, "getMapRegion", int.class, int.class, boolean.class);
 			getTilePool = method(mapProcessorClass, mapTilePoolClass, "getTilePool");
-			getBlockStateShortShapeCache = method(mapProcessorClass, blockStateShortShapeCacheClass, "getBlockStateShortShapeCache");
+			getBlockStateShortShapeCache = blockStateShortShapeCacheClass == null ? null
+					: method(mapProcessorClass, blockStateShortShapeCacheClass, "getBlockStateShortShapeCache");
 			getMapSaveLoad = method(mapProcessorClass, mapSaveLoadClass, "getMapSaveLoad");
-			getMapTile = method(mapProcessorClass, xaeroMapTileClass, "getMapTile", int.class, int.class);
+			Method twoDimensionalMapTile = optionalMethod(mapProcessorClass, xaeroMapTileClass, "getMapTile",
+					int.class, int.class);
+			getMapTile = twoDimensionalMapTile != null ? twoDimensionalMapTile
+					: method(mapProcessorClass, xaeroMapTileClass, "getMapTile", int.class, int.class, int.class);
 			getCurrentDimension = method(mapProcessorClass, String.class, "getCurrentDimension");
 			getMapWorld = method(mapProcessorClass, mapWorldClass, "getMapWorld");
 			getCurrentMapDimension = method(mapWorldClass, mapDimensionClass, "getCurrentDimension");
@@ -456,13 +463,15 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			getDimensionName = method(mapProcessorClass, String.class, "getDimensionName", resourceKeyClass);
 			getMainFolder = method(mapSaveLoadClass, Path.class, "getMainFolder", String.class, String.class);
 			getCurrentWorldId = method(mapProcessorClass, String.class, "getCurrentWorldId");
-			getDetectedRegions = method(mapDimensionClass, java.util.Hashtable.class, "getDetectedRegions");
+			getDetectedRegions = optionalMethod(mapDimensionClass, java.util.Hashtable.class, "getDetectedRegions");
+			getWorldSaveDetectedRegions = getDetectedRegions == null
+					? method(mapDimensionClass, Iterable.class, "getWorldSaveDetectedRegions") : null;
 			getMainFolderPath = method(mapDimensionClass, Path.class, "getMainFolderPath");
 			getCurrentMultiworld = method(mapDimensionClass, String.class, "getCurrentMultiworld");
 			getDetectedRegionX = method(regionDetectionClass, int.class, "getRegionX");
 			getDetectedRegionZ = method(regionDetectionClass, int.class, "getRegionZ");
 			chunkUpdateCallback = method(xaeroCoreClass, "chunkUpdateCallback", int.class, int.class);
-			waitForLoadingToFinish = method(mapProcessorClass, "waitForLoadingToFinish", Runnable.class);
+			waitForLoadingToFinish = optionalMethod(mapProcessorClass, void.class, "waitForLoadingToFinish", Runnable.class);
 			getChunk = method(mapRegionClass, mapTileChunkClass, "getChunk", int.class, int.class);
 			setChunk = method(mapRegionClass, "setChunk", int.class, int.class, mapTileChunkClass);
 			getRegionLoadState = method(mapRegionClass, byte.class, "getLoadState");
@@ -477,15 +486,19 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			getChunkLoadState = method(mapTileChunkClass, int.class, "getLoadState");
 			setChunkLoadState = method(mapTileChunkClass, "setLoadState", byte.class);
 			getTile = method(mapTileChunkClass, xaeroMapTileClass, "getTile", int.class, int.class);
-			setTile = method(mapTileChunkClass, "setTile", int.class, int.class, xaeroMapTileClass, blockStateShortShapeCacheClass);
+			setTile = blockStateShortShapeCacheClass == null
+					? method(mapTileChunkClass, "setTile", int.class, int.class, xaeroMapTileClass)
+					: method(mapTileChunkClass, "setTile", int.class, int.class, xaeroMapTileClass,
+							blockStateShortShapeCacheClass);
 			wasChanged = method(mapTileChunkClass, "wasChanged");
 			setChanged = method(mapTileChunkClass, "setChanged", boolean.class);
-			setHasHadTerrain = method(mapTileChunkClass, "setHasHadTerrain");
+			setHasHadTerrain = optionalMethod(mapTileChunkClass, void.class, "setHasHadTerrain");
 			tilePoolGet = method(mapTilePoolClass, xaeroMapTileClass, "get", String.class, int.class, int.class);
 			setBlock = method(xaeroMapTileClass, "setBlock", int.class, int.class, mapBlockClass);
 			setLoaded = method(xaeroMapTileClass, "setLoaded", boolean.class);
 			setWrittenOnce = method(xaeroMapTileClass, "setWrittenOnce", boolean.class);
-			setWorldInterpretationVersion = method(xaeroMapTileClass, "setWorldInterpretationVersion", int.class);
+			setWorldInterpretationVersion = optionalMethod(xaeroMapTileClass, void.class,
+					"setWorldInterpretationVersion", int.class);
 			isTileLoaded = method(xaeroMapTileClass, "isLoaded");
 			wasTileWrittenOnce = method(xaeroMapTileClass, "wasWrittenOnce");
 			getMapBlock = method(xaeroMapTileClass, mapBlockClass, "getBlock", int.class, int.class);
@@ -493,21 +506,24 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			pixelLightField = field(mapPixelClass, "light", byte.class);
 			pixelGlowingField = field(mapPixelClass, "glowing", boolean.class);
 			getBlockHeight = method(mapBlockClass, int.class, "getHeight");
-			getBlockTopHeight = method(mapBlockClass, int.class, "getTopHeight");
-			getBlockBiome = method(mapBlockClass, biomeKeyClass, "getBiome");
+			getBlockTopHeight = optionalMethod(mapBlockClass, int.class, "getTopHeight");
+			getBlockBiome = method(mapBlockClass, biomeValueClass, "getBiome");
 			getBlockOverlays = method(mapBlockClass, java.util.ArrayList.class, "getOverlays");
-			isCaveBlock = method(mapBlockClass, boolean.class, "isCaveBlock");
-			getBiomeIdentifier = method(biomeKeyClass, ResourceLocation.class, "getIdentifier", Registry.class);
-			getOverlayTransparency = method(overlayClass, float.class, "getTransparency");
+			isCaveBlock = optionalMethod(mapBlockClass, boolean.class, "isCaveBlock");
+			getBiomeIdentifier = legacyBiomeKeyClass == null ? null
+					: method(legacyBiomeKeyClass, ResourceLocation.class, "getIdentifier", Registry.class);
+			getOverlayTransparency = optionalMethod(overlayClass, float.class, "getTransparency");
 			getOverlayOpacity = method(overlayClass, int.class, "getOpacity");
 			mapBlockConstructor = constructor(mapBlockClass);
-			writeBlock = method(mapBlockClass, "write", BlockState.class, int.class, int.class, biomeKeyClass, byte.class, boolean.class, boolean.class);
+			writeBlock = resolveBlockWriter(mapBlockClass, biomeValueClass);
 			setSlopeUnknown = method(mapBlockClass, "setSlopeUnknown", boolean.class);
-			overlayConstructor = constructor(overlayClass, BlockState.class, float.class, byte.class, boolean.class);
+			overlayConstructor = resolveOverlayConstructor(overlayClass);
 			addOverlay = method(mapBlockClass, "addOverlay", overlayClass);
 			increaseOverlayOpacity = method(overlayClass, "increaseOpacity", int.class);
-			biomeKeyManagerField = field(mapSaveLoadClass, "biomeKeyManager", biomeKeyManagerClass);
-			biomeKeyGet = method(biomeKeyManagerClass, biomeKeyClass, "get", String.class);
+			biomeKeyManagerField = biomeKeyManagerClass == null ? null
+					: field(mapSaveLoadClass, "biomeKeyManager", biomeKeyManagerClass);
+			biomeKeyGet = biomeKeyManagerClass == null ? null
+					: method(biomeKeyManagerClass, legacyBiomeKeyClass, "get", String.class);
 			requestLoad = method(mapSaveLoadClass, "requestLoad", mapRegionClass, String.class);
 			shouldCache = method(leveledRegionClass, "shouldCache");
 			reloadHasBeenRequested = method(leveledRegionClass, "reloadHasBeenRequested");
@@ -521,13 +537,13 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			getToSave = method(mapSaveLoadClass, "getToSave");
 			writerThreadPauseSyncField = field(mapRegionClass, "writerThreadPauseSync", Object.class);
 			chunkIncludeInSaveField = field(mapTileChunkClass, "includeInSave", boolean.class);
-			chunkHasHadTerrainField = field(mapTileChunkClass, "hasHadTerrain", boolean.class);
-			regionHasHadTerrainField = field(mapRegionClass, "hasHadTerrain", boolean.class);
+			chunkHasHadTerrainField = optionalField(mapTileChunkClass, "hasHadTerrain", boolean.class);
+			regionHasHadTerrainField = optionalField(mapRegionClass, "hasHadTerrain", boolean.class);
 			XaeroMapsync_r.LOGGER.debug(
-					"Validated Xaero 1.25.1 reflective signatures: session={} processor={} region={} tileChunk={} tile={} block={} biomeKey={}",
+					"Validated Xaero 1.17.1 Fabric reflective signatures: session={} processor={} region={} tileChunk={} tile={} block={} biomeValue={}",
 					sessionClass.getName(), mapProcessorClass.getName(), mapRegionClass.getName(),
 					mapTileChunkClass.getName(), xaeroMapTileClass.getName(), mapBlockClass.getName(),
-					biomeKeyClass.getName());
+					biomeValueClass.getName());
 		}
 
 		@Override
@@ -543,7 +559,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			if (session == null) throw new IllegalStateException("Xaero WorldMapSession is not initialized");
 			Object processor = invoke(getMapProcessor, session);
 			if (processor == null) throw new IllegalStateException("Xaero MapProcessor is not initialized");
-			Object xaeroTile = invoke(getMapTile, processor, chunkX, chunkZ);
+			Object xaeroTile = currentSurfaceTile(processor, chunkX, chunkZ);
 			boolean xaeroReady = xaeroTile != null && (Boolean) invoke(isTileLoaded, xaeroTile)
 					&& (Boolean) invoke(wasTileWrittenOnce, xaeroTile)
 					&& hasRenderableTileData(xaeroTile);
@@ -591,7 +607,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 
 			MapTile[] snapshot = new MapTile[1];
 			Throwable[] failure = new Throwable[1];
-			invoke(waitForLoadingToFinish, processor, (Runnable) () -> {
+			runAfterLoading(processor, () -> {
 				try {
 					snapshot[0] = localTileAfterLoading(dimension, chunkX, chunkZ, processor, minecraft);
 				} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
@@ -618,18 +634,10 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			// during the short join transition. Resolve through the id only when ready.
 			Object mapDimension = currentDimensionId == null ? null
 					: invoke(getMapDimension, mapWorld, currentDimensionId);
-			Object detected = mapDimension == null ? null : invoke(getDetectedRegions, mapDimension);
+			Object detected = mapDimension == null ? null : invoke(
+					getDetectedRegions == null ? getWorldSaveDetectedRegions : getDetectedRegions, mapDimension);
 			java.util.Set<LocalRegion> regions = new java.util.HashSet<>();
-			if (detected instanceof Map<?, ?> outer) {
-				for (Object row : outer.values()) {
-					if (!(row instanceof Map<?, ?> inner)) continue;
-					for (Object detection : inner.values()) {
-						if (detection == null) continue;
-						regions.add(new LocalRegion(((Number) invoke(getDetectedRegionX, detection)).intValue(),
-								((Number) invoke(getDetectedRegionZ, detection)).intValue()));
-					}
-				}
-			}
+			collectDetectedRegions(detected, regions);
 			if (regions.isEmpty()) {
 				Path mainFolder;
 				String multiworld;
@@ -808,18 +816,18 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					if (block == null) throw new IllegalStateException("Xaero map block is not loaded yet");
 					BlockState state = (BlockState) invoke(getPixelState, block);
 					Object biome = invoke(getBlockBiome, block);
-					ResourceLocation biomeId = biome == null ? null
-							: (ResourceLocation) invoke(getBiomeIdentifier, biome, biomeRegistry);
-					if (state == null || biome == null) {
+					ResourceLocation biomeId = biomeIdentifier(biome, biomeRegistry);
+					if (state == null || biomeId == null) {
 						throw new IllegalStateException("Xaero map block registry data is not loaded yet");
 					}
 					baseStateIds[index] = Block.getId(state);
 					baseHeights[index] = ((Number) invoke(getBlockHeight, block)).intValue();
-					topHeights[index] = ((Number) invoke(getBlockTopHeight, block)).intValue();
+					topHeights[index] = getBlockTopHeight == null ? baseHeights[index]
+							: ((Number) invoke(getBlockTopHeight, block)).intValue();
 					biomeKeys[index] = biomeId.toString();
 					lightAbove[index] = pixelLightField.getByte(block);
 					glowing[index] = pixelGlowingField.getBoolean(block);
-					cave[index] = (Boolean) invoke(isCaveBlock, block);
+					cave[index] = isCaveBlock != null && (Boolean) invoke(isCaveBlock, block);
 					List<?> xaeroOverlays = (List<?>) invoke(getBlockOverlays, block);
 					List<MapTile.Overlay> column = new ArrayList<>(xaeroOverlays == null ? 0 : xaeroOverlays.size());
 					if (xaeroOverlays != null) {
@@ -827,7 +835,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 							BlockState overlayState = (BlockState) invoke(getPixelState, overlay);
 							if (overlayState == null) throw new IllegalStateException("Xaero overlay is not loaded yet");
 							column.add(new MapTile.Overlay(Block.getId(overlayState),
-									((Number) invoke(getOverlayTransparency, overlay)).floatValue(),
+									getOverlayTransparency == null ? overlayTransparency(overlayState)
+											: ((Number) invoke(getOverlayTransparency, overlay)).floatValue(),
 									pixelLightField.getByte(overlay), pixelGlowingField.getBoolean(overlay),
 									((Number) invoke(getOverlayOpacity, overlay)).intValue()));
 						}
@@ -872,11 +881,11 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				throw new IllegalStateException("Xaero MapProcessor is not initialized");
 			}
 			Object saveLoad = invoke(getMapSaveLoad, processor);
-			Object biomeKeyManager = biomeKeyManagerField.get(saveLoad);
+			Object biomeKeyManager = biomeKeyManagerField == null ? null : biomeKeyManagerField.get(saveLoad);
 			Throwable[] failure = new Throwable[1];
 			XaeroMapsync_r.LOGGER.debug("Waiting for Xaero loading before applying batch dimension={} size={} region={} {}",
 					first.dimension(), sources.size(), regionCoordinate(first.chunkX()), regionCoordinate(first.chunkZ()));
-			invoke(waitForLoadingToFinish, processor, (Runnable) () -> {
+			runAfterLoading(processor, () -> {
 				try {
 					applyAfterLoading(sources, processor, saveLoad, biomeKeyManager, minecraft);
 				} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
@@ -978,7 +987,9 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					if (light > 15) {
 						throw new IllegalArgumentException("Invalid light level " + light + " at " + localX + "," + localZ);
 					}
-					Object biomeKey = invoke(biomeKeyGet, biomeKeyManager, biomeId.toString());
+					Object biomeKey = biomeKeyGet == null
+							? net.minecraft.resources.ResourceKey.create(Registry.BIOME_REGISTRY, biomeId)
+							: invoke(biomeKeyGet, biomeKeyManager, biomeId.toString());
 					if (biomeKey == null) {
 						throw new IllegalStateException("Xaero did not create a biome key for " + biomeId);
 					}
@@ -988,20 +999,19 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 						if (overlayState == null) {
 							throw new IllegalArgumentException("Invalid overlay registry ID at " + localX + "," + localZ);
 						}
-						Object overlay = construct(overlayConstructor, overlayState, sourceOverlay.transparency(),
-								sourceOverlay.lightAbove(), sourceOverlay.glowing());
+						Object overlay = createOverlay(overlayState, sourceOverlay);
 						if (sourceOverlay.opacity() > 0) {
 							invoke(increaseOverlayOpacity, overlay, sourceOverlay.opacity());
 						}
 						invoke(addOverlay, block, overlay);
 					}
-					invoke(writeBlock, block, state, baseHeights[index], topHeights[index], biomeKey, lights[index],
+					writeBlock(block, state, baseHeights[index], topHeights[index], biomeKey, lights[index],
 							glowing[index], cave[index]);
 					invoke(setSlopeUnknown, block, true);
 					invoke(setBlock, xaeroTile, localX, localZ, block);
 				}
 			}
-			invoke(setWorldInterpretationVersion, xaeroTile, 1);
+			if (setWorldInterpretationVersion != null) invoke(setWorldInterpretationVersion, xaeroTile, 1);
 			invoke(setWrittenOnce, xaeroTile, true);
 			invoke(setLoaded, xaeroTile, true);
 			return xaeroTile;
@@ -1015,7 +1025,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			byte originalRegionLoadState = ((Number) invoke(getRegionLoadState, region)).byteValue();
 			boolean originalBeingWritten = (Boolean) invoke(isBeingWritten, region);
 			boolean originalRefreshing = (Boolean) invoke(isRefreshing, region);
-			boolean originalRegionTerrain = regionHasHadTerrainField.getBoolean(region);
+			boolean originalRegionTerrain = regionHasHadTerrainField != null
+					&& regionHasHadTerrainField.getBoolean(region);
 			boolean originalShouldCache = (Boolean) invoke(shouldCache, region);
 			boolean originalRecacheRequested = (Boolean) invoke(recacheHasBeenRequested, region);
 			boolean removedNativeCacheRequest = false;
@@ -1033,7 +1044,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				throw new IllegalStateException("Xaero region " + regionCoordinate(source.chunkX()) + ","
 						+ regionCoordinate(source.chunkZ()) + " is not fully loaded: state=" + originalRegionLoadState);
 			}
-			Object shapeCache = invoke(getBlockStateShortShapeCache, processor);
+			Object shapeCache = getBlockStateShortShapeCache == null ? null
+					: invoke(getBlockStateShortShapeCache, processor);
 			Map<Long, ChunkSnapshot> chunks = new LinkedHashMap<>();
 			List<TileMutation> mutations = new ArrayList<>(sources.size());
 
@@ -1077,7 +1089,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 						snapshot = new ChunkSnapshot(chunk, chunkInRegionX, chunkInRegionZ, created,
 								((Number) invoke(getChunkLoadState, chunk)).byteValue(),
 								(Boolean) invoke(wasChanged, chunk), chunkIncludeInSaveField.getBoolean(chunk),
-								chunkHasHadTerrainField.getBoolean(chunk));
+								chunkHasHadTerrainField != null && chunkHasHadTerrainField.getBoolean(chunk));
 						chunks.put(chunkKey, snapshot);
 						if (created) invoke(setChunk, region, chunkInRegionX, chunkInRegionZ, chunk);
 					}
@@ -1085,9 +1097,9 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					int tileInChunkZ = Math.floorMod(tile.chunkZ(), 4);
 					Object oldTile = invoke(getTile, snapshot.chunk, tileInChunkX, tileInChunkZ);
 					mutations.add(new TileMutation(snapshot.chunk, tileInChunkX, tileInChunkZ, oldTile));
-					invoke(setTile, snapshot.chunk, tileInChunkX, tileInChunkZ, xaeroTiles.get(index), shapeCache);
+					setTile(snapshot.chunk, tileInChunkX, tileInChunkZ, xaeroTiles.get(index), shapeCache);
 					invoke(setChanged, snapshot.chunk, true);
-					invoke(setHasHadTerrain, snapshot.chunk);
+					if (setHasHadTerrain != null) invoke(setHasHadTerrain, snapshot.chunk);
 				}
 				// Xaero owns allCachePrepared and only invalidates it when refresh processing
 				// actually schedules cache work. Pre-clearing it can queue an impossible save.
@@ -1106,7 +1118,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					}
 					for (int index = mutations.size() - 1; index >= 0; index--) {
 						TileMutation mutation = mutations.get(index);
-						invoke(setTile, mutation.chunk, mutation.tileX, mutation.tileZ, mutation.oldTile, shapeCache);
+						setTile(mutation.chunk, mutation.tileX, mutation.tileZ, mutation.oldTile, shapeCache);
 					}
 					for (ChunkSnapshot snapshot : chunks.values()) {
 						if (snapshot.created) {
@@ -1115,10 +1127,12 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 							invoke(setChunkLoadState, snapshot.chunk, snapshot.loadState);
 							invoke(setChanged, snapshot.chunk, snapshot.changed);
 							chunkIncludeInSaveField.setBoolean(snapshot.chunk, snapshot.includeInSave);
-							chunkHasHadTerrainField.setBoolean(snapshot.chunk, snapshot.hadTerrain);
+							if (chunkHasHadTerrainField != null)
+								chunkHasHadTerrainField.setBoolean(snapshot.chunk, snapshot.hadTerrain);
 						}
 					}
-					regionHasHadTerrainField.setBoolean(region, originalRegionTerrain);
+					if (regionHasHadTerrainField != null)
+						regionHasHadTerrainField.setBoolean(region, originalRegionTerrain);
 					invoke(setBeingWritten, region, originalBeingWritten);
 					if (removedNativeCacheRequest && !(Boolean) invoke(toCacheContains, saveLoad, region)) {
 						invoke(setShouldCache, region, originalShouldCache, "shared map sync rollback");
@@ -1158,10 +1172,143 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			}
 		}
 
+		private Object currentSurfaceTile(Object processor, int chunkX, int chunkZ)
+				throws ReflectiveOperationException {
+			return getMapTile.getParameterCount() == 2
+					? invoke(getMapTile, processor, chunkX, chunkZ)
+					: invoke(getMapTile, processor, 0, chunkX, chunkZ);
+		}
+
+		private void runAfterLoading(Object processor, Runnable action) throws ReflectiveOperationException {
+			if (waitForLoadingToFinish == null) {
+				action.run();
+			} else {
+				invoke(waitForLoadingToFinish, processor, action);
+			}
+		}
+
+		private void collectDetectedRegions(Object value, java.util.Set<LocalRegion> regions)
+				throws ReflectiveOperationException {
+			if (value == null) return;
+			if (value instanceof Map<?, ?> map) {
+				for (Object child : map.values()) collectDetectedRegions(child, regions);
+				return;
+			}
+			if (value instanceof Iterable<?> iterable) {
+				for (Object child : iterable) collectDetectedRegions(child, regions);
+				return;
+			}
+			if (getDetectedRegionX.getDeclaringClass().isInstance(value)) {
+				regions.add(new LocalRegion(((Number) invoke(getDetectedRegionX, value)).intValue(),
+						((Number) invoke(getDetectedRegionZ, value)).intValue()));
+			}
+		}
+
+		private ResourceLocation biomeIdentifier(Object biome, Registry<Biome> biomeRegistry)
+				throws ReflectiveOperationException {
+			if (biome == null) return null;
+			if (getBiomeIdentifier != null) {
+				return (ResourceLocation) invoke(getBiomeIdentifier, biome, biomeRegistry);
+			}
+			if (biome instanceof net.minecraft.resources.ResourceKey<?> key) return key.location();
+			throw new IllegalStateException("Unsupported Xaero biome value " + biome.getClass().getName());
+		}
+
+		private static float overlayTransparency(BlockState state) {
+			if (state.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock) return 0.66F;
+			if (state.getBlock() instanceof net.minecraft.world.level.block.IceBlock) return 0.83F;
+			return 0.5F;
+		}
+
+		private Object createOverlay(BlockState state, MapTile.Overlay source) throws ReflectiveOperationException {
+			Class<?>[] parameters = overlayConstructor.getParameterTypes();
+			if (parameters.length == 3) {
+				return construct(overlayConstructor, state, source.lightAbove(), source.glowing());
+			}
+			if (parameters.length == 4) {
+				return construct(overlayConstructor, state, source.transparency(), source.lightAbove(), source.glowing());
+			}
+			if (parameters.length == 5 && parameters[1] == int[].class) {
+				return construct(overlayConstructor, state, legacyColourData(), Math.round(source.transparency()),
+						source.lightAbove(), source.glowing());
+			}
+			return construct(overlayConstructor, state, 0, 0, source.transparency(), source.lightAbove(),
+					source.glowing());
+		}
+
+		private void writeBlock(Object target, BlockState state, int height, int topHeight, Object biome,
+				byte light, boolean glowing, boolean cave) throws ReflectiveOperationException {
+			Class<?>[] parameters = writeBlock.getParameterTypes();
+			if (parameters.length == 8) {
+				invoke(writeBlock, target, state, height, topHeight, legacyColourData(), biome, light, glowing, cave);
+			} else if (parameters[2] == int[].class) {
+				invoke(writeBlock, target, state, height, legacyColourData(), biome, light, glowing, cave);
+			} else {
+				invoke(writeBlock, target, state, height, topHeight, biome, light, glowing, cave);
+			}
+		}
+
+		private void setTile(Object chunk, int tileX, int tileZ, Object tile, Object shapeCache)
+				throws ReflectiveOperationException {
+			if (setTile.getParameterCount() == 3) {
+				invoke(setTile, chunk, tileX, tileZ, tile);
+			} else {
+				invoke(setTile, chunk, tileX, tileZ, tile, shapeCache);
+			}
+		}
+
+		private static int[] legacyColourData() {
+			return new int[] {0, 0, 0};
+		}
+
+		private static Method resolveBlockWriter(Class<?> mapBlockClass, Class<?> biomeClass)
+				throws NoSuchMethodException {
+			Method current = optionalMethod(mapBlockClass, "write", BlockState.class, int.class, int.class,
+					biomeClass, byte.class, boolean.class, boolean.class);
+			if (current != null) return current;
+			Method withLegacyColours = optionalMethod(mapBlockClass, "write", BlockState.class, int.class,
+					int.class, int[].class, biomeClass, byte.class, boolean.class, boolean.class);
+			if (withLegacyColours != null) return withLegacyColours;
+			return method(mapBlockClass, "write", BlockState.class, int.class, int[].class, biomeClass,
+					byte.class, boolean.class, boolean.class);
+		}
+
+		private static Constructor<?> resolveOverlayConstructor(Class<?> overlayClass) throws NoSuchMethodException {
+			Constructor<?> constructor = optionalConstructor(overlayClass, BlockState.class, float.class, byte.class,
+					boolean.class);
+			if (constructor != null) return constructor;
+			constructor = optionalConstructor(overlayClass, BlockState.class, int.class, int.class, float.class,
+					byte.class, boolean.class);
+			if (constructor != null) return constructor;
+			constructor = optionalConstructor(overlayClass, BlockState.class, int[].class, int.class, byte.class,
+					boolean.class);
+			if (constructor != null) return constructor;
+			return constructor(overlayClass, BlockState.class, byte.class, boolean.class);
+		}
+
 		private static Method method(Class<?> owner, String name, Class<?>... parameterTypes) throws NoSuchMethodException {
 			Method method = owner.getDeclaredMethod(name, parameterTypes);
 			method.setAccessible(true);
 			return method;
+		}
+
+		private static Method optionalMethod(Class<?> owner, String name, Class<?>... parameterTypes) {
+			try {
+				return method(owner, name, parameterTypes);
+			} catch (NoSuchMethodException exception) {
+				return null;
+			}
+		}
+
+		private static Method optionalMethod(Class<?> owner, Class<?> returnType, String name,
+				Class<?>... parameterTypes) throws NoSuchMethodException {
+			Method candidate = optionalMethod(owner, name, parameterTypes);
+			if (candidate == null) return null;
+			if (candidate.getReturnType() != returnType) {
+				throw new NoSuchMethodException(owner.getName() + "." + name + " returns "
+						+ candidate.getReturnType().getName());
+			}
+			return candidate;
 		}
 
 		private static Method method(Class<?> owner, Class<?> returnType, String name, Class<?>... parameterTypes)
@@ -1179,6 +1326,14 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			return constructor;
 		}
 
+		private static Constructor<?> optionalConstructor(Class<?> owner, Class<?>... parameterTypes) {
+			try {
+				return constructor(owner, parameterTypes);
+			} catch (NoSuchMethodException exception) {
+				return null;
+			}
+		}
+
 		private static Field field(Class<?> owner, String name, Class<?> expectedType) throws NoSuchFieldException {
 			Field field = owner.getDeclaredField(name);
 			if (field.getType() != expectedType) {
@@ -1186,6 +1341,30 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			}
 			field.setAccessible(true);
 			return field;
+		}
+
+		private static Field optionalField(Class<?> owner, String name, Class<?> expectedType)
+				throws NoSuchFieldException {
+			Field candidate;
+			try {
+				candidate = owner.getDeclaredField(name);
+			} catch (NoSuchFieldException exception) {
+				return null;
+			}
+			if (candidate.getType() != expectedType) {
+				throw new NoSuchFieldException(owner.getName() + "." + name + " has type "
+						+ candidate.getType().getName());
+			}
+			candidate.setAccessible(true);
+			return candidate;
+		}
+
+		private static Class<?> optionalClass(String name, ClassLoader loader) {
+			try {
+				return Class.forName(name, false, loader);
+			} catch (ClassNotFoundException exception) {
+				return null;
+			}
 		}
 
 		private static Object invoke(Method method, Object target, Object... arguments) throws ReflectiveOperationException {

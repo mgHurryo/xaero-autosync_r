@@ -28,10 +28,12 @@ final class ReflectiveXaeroMapAdapterTest {
 	@org.junit.jupiter.api.io.TempDir Path tempDirectory;
 
 	@Test
-	void versionGateOnlyAcceptsXaeroWorldMap1251() {
+	void versionGateAcceptsPublishedMinecraft1171Boundary() {
+		assertTrue(ReflectiveXaeroMapAdapter.supportsVersion("1.14.5.2"));
 		assertTrue(ReflectiveXaeroMapAdapter.supportsVersion("1.25.1"));
-		assertFalse(ReflectiveXaeroMapAdapter.supportsVersion("1.25"));
-		assertFalse(ReflectiveXaeroMapAdapter.supportsVersion("1.25.2"));
+		assertTrue(ReflectiveXaeroMapAdapter.supportsVersion("1.37.8"));
+		assertFalse(ReflectiveXaeroMapAdapter.supportsVersion("1.14.5.1"));
+		assertFalse(ReflectiveXaeroMapAdapter.supportsVersion("1.37.9"));
 		assertFalse(ReflectiveXaeroMapAdapter.supportsVersion(null));
 	}
 

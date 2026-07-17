@@ -27,7 +27,7 @@ public final class TransferFragmenter {
 		for (int partIndex = 0; partIndex < partCount; partIndex++) {
 			int offset = partIndex * TransferPartPayload.MAX_PART_BYTES;
 			int end = Math.min(data.length, offset + TransferPartPayload.MAX_PART_BYTES);
-			parts.add(new TransferPartPayload(transferId, partIndex, partCount, data.length, checksum,
+			parts.add(TransferPartPayload.fromOwnedPayload(transferId, partIndex, partCount, data.length, checksum,
 					Arrays.copyOfRange(data, offset, end)));
 		}
 		return List.copyOf(parts);

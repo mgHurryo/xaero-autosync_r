@@ -17,6 +17,11 @@ public final class TransferPartPayload {
 
 	public TransferPartPayload(UUID transferId, int partIndex, int partCount, int totalLength, long checksum,
 			byte[] payload) {
+		this(transferId, partIndex, partCount, totalLength, checksum, payload, true);
+	}
+
+	private TransferPartPayload(UUID transferId, int partIndex, int partCount, int totalLength, long checksum,
+			byte[] payload, boolean copyPayload) {
 		if (transferId == null) {
 			throw new IllegalArgumentException("Transfer id is required");
 		}
@@ -47,7 +52,12 @@ public final class TransferPartPayload {
 		this.partCount = partCount;
 		this.totalLength = totalLength;
 		this.checksum = checksum;
-		this.payload = payload.clone();
+		this.payload = copyPayload ? payload.clone() : payload;
+	}
+
+	static TransferPartPayload fromOwnedPayload(UUID transferId, int partIndex, int partCount, int totalLength,
+			long checksum, byte[] payload) {
+		return new TransferPartPayload(transferId, partIndex, partCount, totalLength, checksum, payload, false);
 	}
 
 	public static TransferPartPayload read(FriendlyByteBuf buffer) {
@@ -62,7 +72,7 @@ public final class TransferPartPayload {
 		}
 		byte[] payload = new byte[length];
 		buffer.readBytes(payload);
-		return new TransferPartPayload(transferId, partIndex, partCount, totalLength, checksum, payload);
+		return fromOwnedPayload(transferId, partIndex, partCount, totalLength, checksum, payload);
 	}
 
 	public void write(FriendlyByteBuf buffer) {
@@ -98,6 +108,21 @@ public final class TransferPartPayload {
 
 	public byte[] payload() {
 		return payload.clone();
+	}
+
+	public int payloadLength() {
+		return payload.length;
+	}
+
+	void copyPayloadTo(byte[] target, int offset) {
+		System.arraycopy(payload, 0, target, offset, payload.length);
+	}
+
+	boolean payloadMatches(byte[] target, int offset) {
+		for (int index = 0; index < payload.length; index++) {
+			if (target[offset + index] != payload[index]) return false;
+		}
+		return true;
 	}
 
 	static int partCountForLength(int totalLength) {

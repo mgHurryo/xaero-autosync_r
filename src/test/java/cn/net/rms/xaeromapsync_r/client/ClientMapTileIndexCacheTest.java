@@ -34,6 +34,18 @@ final class ClientMapTileIndexCacheTest {
 		assertTrue(cache.matchesRootHash("minecraft:overworld", overworldRoot));
 		assertFalse(cache.matchesRootHash(overworldRoot));
 	}
+
+	@Test
+	void replacingLeafContentInvalidatesCachedRoot() {
+		ClientMapTileIndexCache cache = new ClientMapTileIndexCache();
+		cache.upsert(entry(1L));
+		long originalRoot = cache.computedRootHash();
+
+		cache.upsert(entry(2L));
+
+		assertFalse(cache.matchesRootHash(originalRoot));
+	}
+
 	@Test
 	void delayedEntryCannotReplaceNewerRevision() {
 		ClientMapTileIndexCache index = new ClientMapTileIndexCache();

@@ -118,7 +118,7 @@ public final class ServerTransferManager {
 				}
 				while (pending.nextPart < pending.parts.size()) {
 					TransferPartPayload part = pending.parts.get(pending.nextPart);
-					int estimatedBytes = part.payload().length + 64;
+					int estimatedBytes = part.payloadLength() + 64;
 					boolean spent = lowPriorityPass
 							? budget.trySpendLowPriority(player.getUUID(), estimatedBytes)
 							: budget.trySpend(player.getUUID(), estimatedBytes);

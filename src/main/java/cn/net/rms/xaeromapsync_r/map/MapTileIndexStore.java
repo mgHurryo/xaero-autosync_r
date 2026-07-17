@@ -12,6 +12,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -26,7 +27,9 @@ public final class MapTileIndexStore {
 	static final String INDEX_FILE_NAME = "map_patch_index-v6.json";
 	private final Map<String, MapTileIndexEntry> tiles = new LinkedHashMap<>();
 	private List<MerkleNode> cachedMerkleSnapshot = List.of();
+	private Map<MerkleLookupKey, MerkleNode> cachedMerkleNodes = Map.of();
 	private boolean merkleSnapshotDirty = true;
+	private boolean merkleLookupDirty = true;
 	private long nextRevision = 1L;
 	private int surfaceSamplerVersion = MapTileDebugRenderer.SURFACE_SAMPLER_VERSION;
 
@@ -146,15 +149,21 @@ public final class MapTileIndexStore {
 
 	public synchronized List<MerkleNode> merkleChildren(Collection<MerkleNodeAddress> addresses) {
 		if (addresses.isEmpty()) return Collections.emptyList();
-		List<MerkleNode> snapshot = merkleSnapshotInternal();
+		Map<MerkleLookupKey, MerkleNode> nodeLookup = merkleNodeLookupInternal();
 		List<MerkleNode> children = new ArrayList<>();
 		for (MerkleNodeAddress address : addresses) {
 			if (address.level() <= 0) continue;
-			for (MerkleNode node : snapshot) {
-				if (node.dimension().equals(address.dimension()) && node.level() == address.level() - 1
-						&& Math.floorDiv(node.nodeX(), 2) == address.nodeX()
-						&& Math.floorDiv(node.nodeZ(), 2) == address.nodeZ()) {
-					children.add(node);
+			long firstChildX = (long) address.nodeX() * 2L;
+			long firstChildZ = (long) address.nodeZ() * 2L;
+			for (int offsetX = 0; offsetX < 2; offsetX++) {
+				for (int offsetZ = 0; offsetZ < 2; offsetZ++) {
+					long childX = firstChildX + offsetX;
+					long childZ = firstChildZ + offsetZ;
+					if (childX < Integer.MIN_VALUE || childX > Integer.MAX_VALUE
+							|| childZ < Integer.MIN_VALUE || childZ > Integer.MAX_VALUE) continue;
+					MerkleNode child = nodeLookup.get(new MerkleLookupKey(address.dimension(),
+							address.level() - 1, (int) childX, (int) childZ));
+					if (child != null) children.add(child);
 				}
 			}
 		}
@@ -185,15 +194,34 @@ public final class MapTileIndexStore {
 	private List<MerkleNode> merkleSnapshotInternal() {
 		if (merkleSnapshotDirty) {
 			cachedMerkleSnapshot = List.copyOf(MerkleTreeBuilder.build(tiles.values()));
+			cachedMerkleNodes = Map.of();
+			merkleLookupDirty = true;
 			merkleSnapshotDirty = false;
 		}
 		return cachedMerkleSnapshot;
 	}
 
+	private Map<MerkleLookupKey, MerkleNode> merkleNodeLookupInternal() {
+		List<MerkleNode> snapshot = merkleSnapshotInternal();
+		if (merkleLookupDirty) {
+			Map<MerkleLookupKey, MerkleNode> nodes = new HashMap<>();
+			for (MerkleNode node : snapshot) {
+				nodes.put(new MerkleLookupKey(node.dimension(), node.level(), node.nodeX(), node.nodeZ()), node);
+			}
+			cachedMerkleNodes = Collections.unmodifiableMap(nodes);
+			merkleLookupDirty = false;
+		}
+		return cachedMerkleNodes;
+	}
+
 	private void invalidateMerkleSnapshot() {
 		cachedMerkleSnapshot = List.of();
+		cachedMerkleNodes = Map.of();
 		merkleSnapshotDirty = true;
+		merkleLookupDirty = true;
 	}
+
+	private record MerkleLookupKey(String dimension, int level, int nodeX, int nodeZ) { }
 
 	public record DimensionSnapshot(long epoch, List<MapTileIndexEntry> entries) { }
 }

@@ -432,7 +432,7 @@ public final class SharedMapNetworking {
 			XaeroMapsync_r.LOGGER.trace(
 					"map_sync event=fragment_sent trace_id={} player={} transfer_id={} part={} part_count={} bytes={} crc={}",
 					traceId(player), player.getGameProfile().getName(), payload.transferId(), payload.partIndex(),
-					payload.partCount(), payload.payload().length, payload.checksum());
+					payload.partCount(), payload.payloadLength(), payload.checksum());
 		}
 	}
 

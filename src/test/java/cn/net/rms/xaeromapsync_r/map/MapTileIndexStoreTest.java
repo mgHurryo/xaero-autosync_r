@@ -96,6 +96,22 @@ final class MapTileIndexStoreTest {
 	}
 
 	@Test
+	void indexedMerkleLookupHandlesNegativeChildCoordinates() {
+		MapTileIndexStore store = new MapTileIndexStore();
+		store.upsert(tile("minecraft:overworld", -2, -2, 101L));
+		store.upsert(tile("minecraft:overworld", -2, -1, 102L));
+		store.upsert(tile("minecraft:overworld", -1, -2, 103L));
+		store.upsert(tile("minecraft:overworld", -1, -1, 104L));
+		MerkleNode root = store.merkleRoots("minecraft:overworld").get(0);
+
+		List<MerkleNode> children = store.merkleChildren(root.dimension(), root.level(), root.nodeX(), root.nodeZ());
+
+		assertEquals(List.of("minecraft:overworld:0:-2:-2:101", "minecraft:overworld:0:-2:-1:102",
+				"minecraft:overworld:0:-1:-2:103", "minecraft:overworld:0:-1:-1:104"),
+				children.stream().map(MapTileIndexStoreTest::nodeSignature).toList());
+	}
+
+	@Test
 	void v5IndexUsesIndependentFileName() {
 		assertEquals("map_patch_index-v6.json", MapTileIndexStore.INDEX_FILE_NAME);
 	}

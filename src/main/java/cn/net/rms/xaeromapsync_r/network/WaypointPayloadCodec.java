@@ -11,6 +11,7 @@ final class WaypointPayloadCodec {
 	static final int MAX_SYMBOL_LENGTH = 16;
 	static final int MAX_CATEGORY_LENGTH = 64;
 	static final int MAX_SNAPSHOT_WAYPOINTS = 4096;
+	private static final WaypointVisibility[] VISIBILITY_VALUES = WaypointVisibility.values();
 
 	private WaypointPayloadCodec() {
 	}
@@ -120,11 +121,10 @@ final class WaypointPayloadCodec {
 
 	private static WaypointVisibility readVisibility(FriendlyByteBuf buffer) {
 		int ordinal = buffer.readVarInt();
-		WaypointVisibility[] values = WaypointVisibility.values();
-		if (ordinal < 0 || ordinal >= values.length) {
+		if (ordinal < 0 || ordinal >= VISIBILITY_VALUES.length) {
 			throw new IllegalArgumentException("Unknown waypoint visibility ordinal: " + ordinal);
 		}
-		return values[ordinal];
+		return VISIBILITY_VALUES[ordinal];
 	}
 
 	private static final class WaypointFields {

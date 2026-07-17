@@ -61,17 +61,16 @@ public final class TransferAssembler {
 		}
 
 		int partIndex = part.partIndex();
-		byte[] payload = part.payload();
 		int offset = partIndex * TransferPartPayload.MAX_PART_BYTES;
 		if (receivedParts.get(partIndex)) {
-			if (!matchesExisting(payload, offset)) {
+			if (!part.payloadMatches(assembledData, offset)) {
 				markCorrupt();
 				return ReceiveResult.CORRUPT;
 			}
 			return ReceiveResult.DUPLICATE;
 		}
 
-		System.arraycopy(payload, 0, assembledData, offset, payload.length);
+		part.copyPayloadTo(assembledData, offset);
 		receivedParts.set(partIndex);
 		receivedCount++;
 		lastActivityMillis = nowMillis;
@@ -163,15 +162,6 @@ public final class TransferAssembler {
 		if (nowMillis < lastActivityMillis) {
 			throw new IllegalArgumentException("Current time moved backwards");
 		}
-	}
-
-	private boolean matchesExisting(byte[] payload, int offset) {
-		for (int index = 0; index < payload.length; index++) {
-			if (assembledData[offset + index] != payload[index]) {
-				return false;
-			}
-		}
-		return true;
 	}
 
 	private void markCorrupt() {

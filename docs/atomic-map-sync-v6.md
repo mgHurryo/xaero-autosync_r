@@ -18,6 +18,7 @@
    当前加载范围采用持久环形游标，每 tick 最多检查 256 个 tile、排队 64 个上传，不存在固定 8 tile 的中心重扫上限；压缩队列饱和时在后续轮次继续。实时 hash 必须连续稳定 2 秒才发布，避免渲染中间态持续替换 catalog body。
 8. 每 100 tick 增量检查 catalog。全局 epoch 只保证分页一致性，不参与 patch content hash，因此无关 patch 变化不会造成全图重下。
 9. catalog 历史引用的旧 tile body 以内容 hash 保留在 16,384 项有界 LRU 中；当前磁盘 body 被新上传替换后，慢客户端仍能完成旧 epoch patch。服务重启后只发布当前磁盘版本，不需要持久化这段临时历史。
+10. 缺口探测只把达到目标 revision 的相邻 tile 视为已存在；同 region 后续 patch 会重新开始 30 秒稳定窗口。peer recovery 每客户端最多 4 批/秒、全局最多 32 批/秒，每批最多探测 8 个同维度客户端。
 
 ## 可观测性
 

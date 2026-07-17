@@ -16,4 +16,17 @@ final class GapRecoveryRequestLimiterTest {
 		assertFalse(limiter.acquire(player, 1_004L));
 		assertTrue(limiter.acquire(player, 2_000L));
 	}
+
+	@Test
+	void boundsGlobalFanOutAcrossRequesters() {
+		GapRecoveryRequestLimiter limiter = new GapRecoveryRequestLimiter();
+		for (int playerIndex = 0; playerIndex < 8; playerIndex++) {
+			UUID player = UUID.randomUUID();
+			for (int requestIndex = 0; requestIndex < 4; requestIndex++)
+				assertTrue(limiter.acquire(player, 1_000L + requestIndex));
+		}
+
+		assertFalse(limiter.acquire(UUID.randomUUID(), 1_004L));
+		assertTrue(limiter.acquire(UUID.randomUUID(), 2_000L));
+	}
 }

@@ -28,6 +28,7 @@ final class MapGapDetector {
 		RegionKey key = new RegionKey(manifest.key().dimension(), manifest.key().xaeroRegionX(),
 				manifest.key().xaeroRegionZ());
 		Window window = windows.computeIfAbsent(key, ignored -> new Window(nowMillis + DETECTION_DELAY_MILLIS));
+		window.dueAtMillis = Math.max(window.dueAtMillis, nowMillis + DETECTION_DELAY_MILLIS);
 		for (MapPatchManifest.TileReference tile : manifest.tiles()) window.add(tile);
 		while (windows.size() > MAX_TRACKED_REGIONS) windows.remove(windows.keySet().iterator().next());
 	}
@@ -82,8 +83,9 @@ final class MapGapDetector {
 			if (dx == 0 && dz == 0) continue;
 			int neighborX = chunkX + dx;
 			int neighborZ = chunkZ + dz;
-			if (window.tiles.containsKey(ChunkPos.asLong(neighborX, neighborZ))
-					|| revisions.appliedRevision(dimension, neighborX, neighborZ) >= 0L) present++;
+			MapPatchManifest.TileReference expected = window.tiles.get(ChunkPos.asLong(neighborX, neighborZ));
+			long applied = revisions.appliedRevision(dimension, neighborX, neighborZ);
+			if (expected == null ? applied >= 0L : applied >= expected.revision()) present++;
 		}
 		return present;
 	}
@@ -95,7 +97,7 @@ final class MapGapDetector {
 	private record RegionKey(String dimension, int regionX, int regionZ) { }
 
 	private static final class Window {
-		private final long dueAtMillis;
+		private long dueAtMillis;
 		private final Map<Long, MapPatchManifest.TileReference> tiles = new HashMap<>();
 		private int minX = Integer.MAX_VALUE;
 		private int maxX = Integer.MIN_VALUE;

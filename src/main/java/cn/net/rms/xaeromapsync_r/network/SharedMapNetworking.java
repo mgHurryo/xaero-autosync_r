@@ -83,6 +83,7 @@ public final class SharedMapNetworking {
 	private static final int LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS = 1;
 	private static final int TILE_BATCH_ENVELOPE_BYTES = 16;
 	private static final int TILE_BATCH_TILE_ENVELOPE_BYTES = 96;
+	private static final int MAX_GAP_RECOVERY_PEERS = 8;
 	private static final LocalTileReadyHintLimiter LOCAL_TILE_HINT_LIMITER = new LocalTileReadyHintLimiter();
 	private static final ClientTileUploadLimiter CLIENT_TILE_UPLOAD_LIMITER = new ClientTileUploadLimiter();
 	private static final GapRecoveryRequestLimiter GAP_RECOVERY_REQUEST_LIMITER = new GapRecoveryRequestLimiter();
@@ -1027,6 +1028,7 @@ public final class SharedMapNetworking {
 				.filter(player -> player != requester)
 				.filter(player -> SharedMapServer.hasAcceptedClient(player.getUUID()))
 				.filter(player -> dimension.equals(player.getLevel().dimension().location().toString()))
+				.limit(MAX_GAP_RECOVERY_PEERS)
 				.toList();
 		List<TileRequestPayload> probes = new ArrayList<>();
 		long nowMillis = System.currentTimeMillis();

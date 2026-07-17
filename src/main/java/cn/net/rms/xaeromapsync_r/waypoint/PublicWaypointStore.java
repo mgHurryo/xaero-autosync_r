@@ -25,6 +25,7 @@ public final class PublicWaypointStore {
 
 	public synchronized void load(MinecraftServer server) {
 		Path path = path(server);
+		boolean migrated = false;
 		waypoints.clear();
 		nextRevision = 1L;
 		if (!Files.exists(path)) {
@@ -39,6 +40,13 @@ public final class PublicWaypointStore {
 			if (file.waypoints != null) {
 				for (PublicWaypoint waypoint : file.waypoints) {
 					if (waypoint != null && waypoint.id() != null) {
+						int normalizedColor = XaeroWaypointPalette.normalize(waypoint.color());
+						if (normalizedColor != waypoint.color()) {
+							XaeroMapsync_r.LOGGER.warn("Migrated invalid Xaero waypoint color {} to palette index {} for {}",
+									waypoint.color(), normalizedColor, waypoint.id());
+							waypoint = waypoint.withColor(normalizedColor);
+							migrated = true;
+						}
 						waypoints.put(waypoint.id(), waypoint);
 						nextRevision = Math.max(nextRevision, waypoint.revision() + 1L);
 					}
@@ -47,6 +55,10 @@ public final class PublicWaypointStore {
 			XaeroMapsync_r.LOGGER.info("Loaded {} public waypoints", waypoints.size());
 		} catch (IOException | RuntimeException exception) {
 			XaeroMapsync_r.LOGGER.warn("Failed to load public waypoints at {}", path, exception);
+			return;
+		}
+		if (migrated) {
+			save(server);
 		}
 	}
 
@@ -106,6 +118,14 @@ public final class PublicWaypointStore {
 			if (!waypoint.deleted()) {
 				count++;
 			}
+		}
+		return count;
+	}
+
+	public synchronized int activeCount(UUID creatorId) {
+		int count = 0;
+		for (PublicWaypoint waypoint : waypoints.values()) {
+			if (!waypoint.deleted() && creatorId.equals(waypoint.creatorId())) count++;
 		}
 		return count;
 	}

@@ -61,6 +61,26 @@ public final class ServerHelloPayload {
 		return accepted;
 	}
 
+	public int protocolVersion() {
+		return protocolVersion;
+	}
+
+	public int mapFormatVersion() {
+		return mapFormatVersion;
+	}
+
+	public String xaeroAdapterVersion() {
+		return xaeroAdapterVersion;
+	}
+
+	public String compression() {
+		return compression;
+	}
+
+	public int maxPacketBytes() {
+		return maxPacketBytes;
+	}
+
 	public String message() {
 		return message;
 	}

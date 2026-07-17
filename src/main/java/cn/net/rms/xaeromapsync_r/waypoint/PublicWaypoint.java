@@ -4,6 +4,7 @@ import java.util.UUID;
 
 public final class PublicWaypoint {
 	public static final int MAX_NAME_LENGTH = 64;
+	public static final int MAX_TEAM_NAME_LENGTH = 64;
 
 	private UUID id;
 	private UUID creatorId;
@@ -17,6 +18,7 @@ public final class PublicWaypoint {
 	private int color;
 	private String category;
 	private WaypointVisibility visibility;
+	private String teamName;
 	private long revision;
 	private boolean deleted;
 	private long createdAtMillis;
@@ -26,6 +28,10 @@ public final class PublicWaypoint {
 	}
 
 	public PublicWaypoint(UUID id, UUID creatorId, String creatorName, String name, String dimension, double x, double y, double z, String symbol, int color, String category, WaypointVisibility visibility, long revision, boolean deleted, long createdAtMillis, long updatedAtMillis) {
+		this(id, creatorId, creatorName, name, dimension, x, y, z, symbol, color, category, visibility, null, revision, deleted, createdAtMillis, updatedAtMillis);
+	}
+
+	public PublicWaypoint(UUID id, UUID creatorId, String creatorName, String name, String dimension, double x, double y, double z, String symbol, int color, String category, WaypointVisibility visibility, String teamName, long revision, boolean deleted, long createdAtMillis, long updatedAtMillis) {
 		this.id = id;
 		this.creatorId = creatorId;
 		this.creatorName = creatorName;
@@ -38,6 +44,7 @@ public final class PublicWaypoint {
 		this.color = color;
 		this.category = category;
 		this.visibility = visibility;
+		this.teamName = teamName;
 		this.revision = revision;
 		this.deleted = deleted;
 		this.createdAtMillis = createdAtMillis;
@@ -92,6 +99,10 @@ public final class PublicWaypoint {
 		return visibility;
 	}
 
+	public String teamName() {
+		return teamName;
+	}
+
 	public long revision() {
 		return revision;
 	}
@@ -109,11 +120,20 @@ public final class PublicWaypoint {
 	}
 
 	public PublicWaypoint withServerState(long nextRevision, boolean deleted, long createdAtMillis, long updatedAtMillis) {
-		return new PublicWaypoint(id, creatorId, creatorName, name, dimension, x, y, z, symbol, color, category, visibility, nextRevision, deleted, createdAtMillis, updatedAtMillis);
+		return new PublicWaypoint(id, creatorId, creatorName, name, dimension, x, y, z, symbol, color, category, visibility, teamName, nextRevision, deleted, createdAtMillis, updatedAtMillis);
 	}
 
 	public PublicWaypoint tombstone(long nextRevision, long nowMillis) {
-		return new PublicWaypoint(id, creatorId, creatorName, name, dimension, x, y, z, symbol, color, category, visibility, nextRevision, true, createdAtMillis, nowMillis);
+		return new PublicWaypoint(id, creatorId, creatorName, name, dimension, x, y, z, symbol, color, category, visibility, teamName, nextRevision, true, createdAtMillis, nowMillis);
+	}
+
+	public PublicWaypoint withOwnership(UUID ownerId, String ownerName, String ownerTeamName) {
+		return new PublicWaypoint(id, ownerId, ownerName, name, dimension, x, y, z, symbol, color, category, visibility, ownerTeamName, revision, deleted, createdAtMillis, updatedAtMillis);
+	}
+
+	public PublicWaypoint withColor(int normalizedColor) {
+		return new PublicWaypoint(id, creatorId, creatorName, name, dimension, x, y, z, symbol, normalizedColor, category,
+				visibility, teamName, revision, deleted, createdAtMillis, updatedAtMillis);
 	}
 
 	public void validate() {
@@ -134,6 +154,9 @@ public final class PublicWaypoint {
 		}
 		if (visibility == null) {
 			throw new IllegalArgumentException("Waypoint visibility is required");
+		}
+		if (teamName != null && (teamName.isBlank() || teamName.length() > MAX_TEAM_NAME_LENGTH)) {
+			throw new IllegalArgumentException("Waypoint team name must contain 1-64 characters");
 		}
 	}
 }

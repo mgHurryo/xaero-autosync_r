@@ -12,6 +12,7 @@ repositories {
 	// Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
 	// See https://docs.gradle.org/current/userguide/declaring_repositories.html
 	// for more information about repositories.
+	mavenCentral()
 }
 
 dependencies {
@@ -22,6 +23,68 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	testImplementation "org.junit.jupiter:junit-jupiter:5.10.3"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+loom {
+	runs {
+		client {
+			client()
+			name = "Shared Map Client A"
+			runDir = "run/client-a"
+			programArg "--username"
+			programArg "MapSyncA"
+		}
+		clientB {
+			client()
+			name = "Shared Map Client B"
+			runDir = "run/client-b"
+			programArg "--username"
+			programArg "MapSyncB"
+		}
+		server {
+			server()
+			name = "Shared Map Server"
+			runDir = "run/server"
+			programArg "nogui"
+		}
+	}
+}
+
+tasks.register("prepareXaeroTestMods", Sync) {
+	group = "fabric"
+	description = "Copies the pinned local Xaero reference jars into both isolated client run directories."
+	def referenceDir = layout.projectDirectory.dir("xaeromap-origin")
+	from(referenceDir) {
+		include "XaerosWorldMap_1.25.1_Fabric_1.17.1.jar"
+		include "Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar"
+	}
+	into(layout.buildDirectory.dir("prepared-xaero-mods"))
+	doFirst {
+		def expected = [
+			"XaerosWorldMap_1.25.1_Fabric_1.17.1.jar",
+			"Xaeros_Minimap_22.11.1_Fabric_1.17.1.jar"
+		]
+		expected.each { name ->
+			if (!referenceDir.file(name).asFile.isFile()) {
+				throw new GradleException("Missing pinned Xaero test jar: xaeromap-origin/${name}")
+			}
+		}
+	}
+	doLast {
+		["run/client-a/mods", "run/client-b/mods"].each { target ->
+			copy {
+				from destinationDir
+				into layout.projectDirectory.dir(target)
+			}
+		}
+	}
+}
+
+test {
+	useJUnitPlatform()
 }
 
 processResources {
@@ -37,7 +100,17 @@ tasks.withType(JavaCompile).configureEach {
 	it.options.release = 16
 }
 
+tasks.withType(JavaExec).configureEach {
+	javaLauncher = javaToolchains.launcherFor {
+		languageVersion = JavaLanguageVersion.of(17)
+	}
+}
+
 java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(17)
+	}
+
 	// Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task
 	// if it is present.
 	// If you remove this line, sources will not be generated.

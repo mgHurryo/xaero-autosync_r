@@ -3,7 +3,16 @@
 	"package": "cn.net.rms.xaeromapsync_r.mixin",
 	"compatibilityLevel": "JAVA_16",
 	"mixins": [
-		"LevelDirtyMixin"
+		"ChunkMapAccessor",
+		"ExplosionActivityMixin",
+		"LevelDirtyMixin",
+		"LightEngineActivityMixin",
+		"PistonActivityMixin",
+		"PrimedTntActivityMixin"
+	],
+	"client": [
+		"XaeroWaypointListMixin",
+		"XaeroWaypointScreenMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

@@ -31,6 +31,7 @@ bin/
 # fabric
 
 run/
+/logs/
 
 # java
 
@@ -48,3 +49,6 @@ CLAUDE.md
 .opencode
 .openclaw
 .claude
+
+# mod
+xaeromap-origin

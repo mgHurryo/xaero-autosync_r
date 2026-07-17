@@ -1,0 +1,15 @@
+{
+  "gui.xaero-mapsync_r.public_waypoints": "共享路径点",
+  "screen.xaero-mapsync_r.share.public": "公开共享",
+  "screen.xaero-mapsync_r.share.team": "队伍共享",
+  "screen.xaero-mapsync_r.share.remove": "删除共享",
+  "screen.xaero-mapsync_r.share.delete_confirm.title": "删除共享路径点？",
+  "screen.xaero-mapsync_r.share.delete_confirm.message": "这是公开地图集上的路径点，请确认是否要删除？",
+  "screen.xaero-mapsync_r.share.status.not_shared": "状态：未共享",
+  "screen.xaero-mapsync_r.share.status.select": "状态：请选择路径点",
+  "screen.xaero-mapsync_r.share.status.public": "状态：完全公开",
+  "screen.xaero-mapsync_r.share.status.team": "状态：队伍公开",
+  "screen.xaero-mapsync_r.share.submitted": "已提交“%s”的共享请求",
+  "screen.xaero-mapsync_r.share.remove_submitted": "已提交“%s”的删除共享请求",
+  "screen.xaero-mapsync_r.share.failed": "路径点共享失败：%s"
+}

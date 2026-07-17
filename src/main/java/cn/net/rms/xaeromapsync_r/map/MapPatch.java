@@ -6,15 +6,15 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Fully verified body for an atomic patch. Partial patches cannot be constructed. */
+/** Fully verified body for every tile declared by an atomic sparse patch. */
 public final class MapPatch {
 	private final MapPatchManifest manifest;
 	private final List<MapTile> tiles;
 
 	public MapPatch(MapPatchManifest manifest, List<MapTile> tiles) {
 		if (manifest == null) throw new IllegalArgumentException("Patch manifest is required");
-		if (tiles == null || tiles.size() != MapPatchKey.TILE_COUNT) {
-			throw new IllegalArgumentException("Atomic patch body requires exactly " + MapPatchKey.TILE_COUNT + " tiles");
+		if (tiles == null || tiles.size() != manifest.tiles().size()) {
+			throw new IllegalArgumentException("Atomic patch body must match the manifest tile count");
 		}
 		Map<Long, MapTile> byCoordinate = new HashMap<>();
 		for (MapTile tile : tiles) {

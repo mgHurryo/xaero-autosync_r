@@ -30,6 +30,15 @@ final class MapTaskSchedulerTest {
 	}
 
 	@Test
+	void automaticRenderingRequiresExplicitOptIn() {
+		assertFalse(MapTaskScheduler.shouldRunAutomaticRendering(false, false, false, 0.0D, 45));
+		assertFalse(MapTaskScheduler.shouldRunAutomaticRendering(true, true, false, 0.0D, 45));
+		assertFalse(MapTaskScheduler.shouldRunAutomaticRendering(true, false, true, 45.0D, 45));
+		org.junit.jupiter.api.Assertions.assertTrue(
+				MapTaskScheduler.shouldRunAutomaticRendering(true, false, true, 44.9D, 45));
+	}
+
+	@Test
 	void adaptiveBudgetUsesCurrentAndPreviousTickHeadroom() {
 		assertEquals(15 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
 				30 * MILLIS, 45 * MILLIS, 15 * MILLIS, 45 * MILLIS, 25 * MILLIS));
@@ -40,11 +49,13 @@ final class MapTaskSchedulerTest {
 	}
 
 	@Test
-	void firstTickBudgetStillHonorsConfiguredAndCurrentLimits() {
-		assertEquals(10 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
+	void firstTickBudgetUsesAOneMillisecondSoftStart() {
+		assertEquals(1 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
 				20 * MILLIS, 0L, 0L, 45 * MILLIS, 10 * MILLIS));
-		assertEquals(5 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
+		assertEquals(1 * MILLIS, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
 				40 * MILLIS, 0L, 0L, 45 * MILLIS, 25 * MILLIS));
+		assertEquals(500_000L, MapTaskScheduler.adaptiveMapWorkBudgetNanos(
+				20 * MILLIS, 0L, 0L, 45 * MILLIS, 500_000L));
 	}
 
 }

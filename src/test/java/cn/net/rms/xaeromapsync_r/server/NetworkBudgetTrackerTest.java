@@ -32,4 +32,18 @@ final class NetworkBudgetTrackerTest {
 		assertThrows(IllegalArgumentException.class, () -> tracker.trySpend(UUID.randomUUID(), -1));
 		assertThrows(IllegalArgumentException.class, () -> tracker.setGlobalBytesPerTick(0));
 	}
+
+	@Test
+	void lowPriorityTrafficOnlyUsesTheLowerHalfOfIdleBudgets() {
+		assertTrue(NetworkBudgetTracker.belowLowWatermark(0, 0, 0, 0,
+				50, 100, 200));
+		assertFalse(NetworkBudgetTracker.belowLowWatermark(51, 0, 0, 0,
+				1, 100, 200));
+		assertFalse(NetworkBudgetTracker.belowLowWatermark(0, 101, 0, 0,
+				1, 100, 200));
+		assertFalse(NetworkBudgetTracker.belowLowWatermark(0, 0, 50, 0,
+				1, 100, 200));
+		assertFalse(NetworkBudgetTracker.belowLowWatermark(0, 0, 0, 100,
+				1, 100, 200));
+	}
 }

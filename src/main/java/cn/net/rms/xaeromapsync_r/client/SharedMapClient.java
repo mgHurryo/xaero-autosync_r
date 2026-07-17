@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
@@ -45,7 +46,10 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.TranslatableComponent;
 
 public final class SharedMapClient {
-	private static boolean connectedToSharedMapServer;
+	private static final int MAX_LOCAL_HINT_ENTRIES = 4_096;
+	private static final int MAX_LOCAL_UPLOAD_HASH_ENTRIES = 16_384;
+	private static final int MAX_PENDING_TILE_TARGETS = 8_192;
+	private static volatile boolean connectedToSharedMapServer;
 	private static final ClientWaypointCache WAYPOINTS = new ClientWaypointCache();
 	private static final ClientMapTileIndexCache MAP_TILES = new ClientMapTileIndexCache();
 	private static final ClientMapTileCache TILE_DATA = new ClientMapTileCache();
@@ -54,10 +58,12 @@ public final class SharedMapClient {
 	private static final ArrayDeque<MapTileIndexEntry> TILE_REQUEST_QUEUE = new ArrayDeque<>();
 	private static final Map<String, Long> QUEUED_TILE_REVISIONS = new HashMap<>();
 	private static final Map<String, Long> IN_FLIGHT_TILE_REQUESTS = new HashMap<>();
-	private static final Map<String, Long> LOCAL_TILE_REVISIONS = new HashMap<>();
-	private static final Map<String, Long> LOCAL_TILE_HINT_TIMES = new HashMap<>();
-	private static final Map<String, Long> LOCAL_TILE_SCAN_TIMES = new HashMap<>();
-	private static final Map<String, Long> LOCAL_TILE_UPLOAD_HASHES = new HashMap<>();
+	private static final Map<String, Long> LOCAL_TILE_HINT_TIMES = boundedAccessMap(MAX_LOCAL_HINT_ENTRIES);
+	private static final Map<String, Long> LOCAL_TILE_UPLOAD_HASHES = boundedAccessMap(MAX_LOCAL_UPLOAD_HASH_ENTRIES);
+	private static final Map<String, Long> LOCAL_TILE_PENDING_HASHES = boundedAccessMap(MAX_LOCAL_UPLOAD_HASH_ENTRIES);
+	private static final Map<String, Long> LOCAL_TILE_PENDING_SINCE = boundedAccessMap(MAX_LOCAL_UPLOAD_HASH_ENTRIES);
+	private static final Map<String, Long> LOCAL_TILE_UPLOADS_IN_FLIGHT = boundedAccessMap(MAX_LOCAL_UPLOAD_HASH_ENTRIES);
+	private static final ArrayDeque<XaeroMapAdapter.LocalRegion> LOCAL_REGION_SCAN_QUEUE = new ArrayDeque<>();
 	private static final ArrayDeque<PendingTileApply> TILE_APPLY_QUEUE = new ArrayDeque<>();
 	private static final Set<String> PENDING_TILE_APPLIES = new HashSet<>();
 	private static final ArrayDeque<MerkleNodeAddress> MAP_NODE_QUEUE = new ArrayDeque<>();
@@ -65,25 +71,30 @@ public final class SharedMapClient {
 	private static final int MAX_PENDING_TILE_APPLIES = 8192;
 	private static final int MAX_CACHE_LOOKUPS_IN_FLIGHT = 256;
 	private static final int MAX_MAP_NODE_REQUESTS_IN_FLIGHT = 16;
-	private static final int MAX_TILE_APPLIES_PER_TICK = 4096;
-	private static final long TILE_APPLY_BUDGET_NANOS = 25_000_000L;
+	private static final int MAX_TILE_APPLIES_PER_TICK = 256;
+	private static final long TILE_APPLY_BUDGET_NANOS = 4_000_000L;
 	private static final long TILE_APPLY_RETRY_MILLIS = 250L;
 	private static final long MAX_TILE_APPLY_RETRY_MILLIS = 5_000L;
-	private static final long LOCAL_TILE_SCAN_COOLDOWN_MILLIS = 100L;
 	private static final long LOCAL_TILE_HINT_COOLDOWN_MILLIS = 2_000L;
+	private static final long LOCAL_TILE_STABILITY_MILLIS = 2_000L;
 	private static final int LOCAL_TILE_UPLOAD_RADIUS_MARGIN = 1;
-	private static final int MAX_LOCAL_TILE_UPLOADS_PER_SCAN = 1536;
+	private static final int MAX_LOCAL_TILE_UPLOADS_PER_SCAN = 64;
+	private static final int MAX_LOCAL_TILE_SCANS_PER_TICK = 256;
 	private static final int LOCAL_TILE_UPLOAD_SCAN_INTERVAL_TICKS = 1;
-	private static final long LOCAL_TILE_UPLOAD_BUDGET_NANOS = 35_000_000L;
-	private static int tileRequestsInFlight;
-	private static int tileCacheLookupsInFlight;
-	private static boolean handlingTileDataBatch;
+	private static final long LOCAL_UPLOAD_TICK_BUDGET_NANOS = 2_000_000L;
+	private static final int XAERO_REGION_CHUNKS_PER_SIDE = 32;
+	private static final int XAERO_REGION_TILE_COUNT = XAERO_REGION_CHUNKS_PER_SIDE * XAERO_REGION_CHUNKS_PER_SIDE;
+	private static final int MAX_ARCHIVE_TILES_PER_TICK = 64;
+	private static volatile int tileRequestsInFlight;
+	private static final Object CACHE_LOOKUP_LOCK = new Object();
+	private static volatile int tileCacheLookupsInFlight;
+	private static volatile boolean handlingTileDataBatch;
 	private static XaeroWaypointAdapter waypointAdapter;
 	private static XaeroMapAdapter mapAdapter;
 	private static AtomicMapSyncClient atomicMapSyncClient;
 	private static int clientTicks;
 	private static int mapRootPollTicks;
-	private static int mapNodeRequestsInFlight;
+	private static volatile int mapNodeRequestsInFlight;
 	private static final Map<String, Long> COMPLETED_MAP_ROOTS = new java.util.LinkedHashMap<>();
 	private static boolean previousMapSyncEnabled;
 	private static boolean previousWaypointsEnabled;
@@ -93,13 +104,26 @@ public final class SharedMapClient {
 	private static long lastMapProgressMillis;
 	private static long retryMapSyncAtMillis;
 	private static boolean mapSyncIncomplete;
-	private static long mapSessionGeneration;
+	private static volatile long mapSessionGeneration;
 	private static long activeMapSyncId;
 	private static long nextMapSyncId;
 	private static long nextMapRequestId;
 	private static int localCacheHits;
 	private static int localCacheMisses;
 	private static boolean waypointSanitizationPending = true;
+	private static String localArchiveDimension;
+	private static XaeroMapAdapter.LocalRegion activeLocalRegion;
+	private static int activeLocalRegionCursor;
+	private static int localArchiveRetryTick;
+	private static int localArchiveRegionsDiscovered;
+	private static int localArchiveRegionsCompleted;
+	private static long localArchiveTilesScanned;
+	private static long localArchiveTilesUploaded;
+	private static long localArchiveTilesMissing;
+	private static boolean localArchiveCompleteLogged;
+	private static String localLiveScanDimension;
+	private static int localLiveScanRadius = -1;
+	private static int localLiveScanCursor;
 
 	private SharedMapClient() {
 	}
@@ -122,6 +146,10 @@ public final class SharedMapClient {
 			clientTicks++;
 			SharedMapNetworking.tickClientTransfers();
 			handleConfigChanges();
+			processPendingTileApplications();
+			long uploadDeadline = System.nanoTime() + LOCAL_UPLOAD_TICK_BUDGET_NANOS;
+			if ((clientTicks & 1) == 0) reportNativeLocalTiles(uploadDeadline);
+			else scanNativeLocalArchive(uploadDeadline);
 			atomicMapSyncClient.tick();
 			sanitizeWaypointsIfNeeded();
 		});
@@ -150,6 +178,7 @@ public final class SharedMapClient {
 				WAYPOINTS.activeCount(), MAP_TILES.totalCount(), TILE_DATA.totalCount(), pendingTileCount());
 		connectedToSharedMapServer = false;
 		atomicMapSyncClient.setConnected(false);
+		resetLocalArchiveScan();
 		clearPendingWaypointMutations();
 		WAYPOINTS.replace(java.util.List.of());
 		waypointSanitizationPending = true;
@@ -210,15 +239,20 @@ public final class SharedMapClient {
 			return;
 		}
 		TILE_DATA.cache(payload.tile(), payload.revision());
-		Long requestedRevision = IN_FLIGHT_TILE_REQUESTS.get(key);
-		if (requestedRevision != null && payload.revision() >= requestedRevision) {
-			IN_FLIGHT_TILE_REQUESTS.remove(key);
-			tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
-		}
+		Long requestedRevision = IN_FLIGHT_TILE_REQUESTS.remove(key);
+		if (requestedRevision != null) tileRequestsInFlight = Math.max(0, tileRequestsInFlight - 1);
 		TILE_REQUEST_QUEUE.removeIf(entry -> tileKey(entry.dimension(), entry.chunkX(), entry.chunkZ()).equals(key)
 				&& entry.revision() <= payload.revision());
 		MAP_TILES.upsert(new MapTileIndexEntry(payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ(),
 				payload.tile().contentHash(), payload.revision(), System.currentTimeMillis()));
+		if (isStaleTileResponse(requestedRevision, payload.revision())) {
+			MAP_TILES.find(payload.tile().dimension(), payload.tile().chunkX(), payload.tile().chunkZ())
+					.filter(entry -> entry.revision() >= requestedRevision)
+					.ifPresent(entry -> enqueueTileRequestFirst(key, entry));
+			XaeroMapsync_r.LOGGER.debug(
+					"Released stale tile response slot and requeued latest revision key={} requestedRevision={} receivedRevision={}",
+					key, requestedRevision, payload.revision());
+		}
 		COMPLETED_MAP_ROOTS.remove(payload.tile().dimension());
 		if (mapAdapter == null || !mapAdapter.isAvailable()) {
 			resetMapQueues();
@@ -319,6 +353,10 @@ public final class SharedMapClient {
 		return pendingRevision <= appliedRevision;
 	}
 
+	static boolean isStaleTileResponse(Long requestedRevision, long receivedRevision) {
+		return requestedRevision != null && receivedRevision < requestedRevision;
+	}
+
 	private static void processPendingTileApplications() {
 		if (TILE_APPLY_QUEUE.isEmpty() || mapAdapter == null || !mapAdapter.isAvailable()) return;
 		long now = System.currentTimeMillis();
@@ -407,8 +445,41 @@ public final class SharedMapClient {
 		return Math.max(2, clientRenderDistance + LOCAL_TILE_UPLOAD_RADIUS_MARGIN);
 	}
 
+	static int localTileScanCount(int radius) {
+		if (radius < 0) throw new IllegalArgumentException("Local tile scan radius must be non-negative");
+		int side = Math.addExact(Math.multiplyExact(radius, 2), 1);
+		return Math.multiplyExact(side, side);
+	}
+
+	/** Packs a center-first square spiral offset as signed dx/dz integer halves. */
+	static long localTileScanOffset(int radius, int cursor) {
+		int count = localTileScanCount(radius);
+		if (cursor < 0 || cursor >= count) throw new IllegalArgumentException("Invalid local tile scan cursor");
+		if (cursor == 0) return 0L;
+		int ring = 1;
+		while (cursor >= localTileScanCount(ring)) ring++;
+		int ringIndex = cursor - localTileScanCount(ring - 1);
+		int edge = ring * 2;
+		int dx;
+		int dz;
+		if (ringIndex <= edge) {
+			dx = -ring + ringIndex;
+			dz = -ring;
+		} else if ((ringIndex -= edge + 1) < edge) {
+			dx = ring;
+			dz = -ring + 1 + ringIndex;
+		} else if ((ringIndex -= edge) < edge) {
+			dx = ring - 1 - ringIndex;
+			dz = ring;
+		} else {
+			ringIndex -= edge;
+			dx = -ring;
+			dz = ring - 1 - ringIndex;
+		}
+		return ((long) dx << 32) | (dz & 0xffffffffL);
+	}
+
 	private static void completeLocalTile(PendingTileApply pending) {
-		LOCAL_TILE_REVISIONS.merge(pending.key, pending.revision, Math::max);
 		PENDING_TILE_APPLIES.remove(pending.key);
 		removeQueuedRevisionAtMost(pending.key, pending.revision);
 		lastMapProgressMillis = System.currentTimeMillis();
@@ -416,45 +487,38 @@ public final class SharedMapClient {
 				pending.tile.dimension(), pending.tile.chunkX(), pending.tile.chunkZ(), pending.revision);
 	}
 
-	private static void reportNativeLocalTiles() {
+	private static void reportNativeLocalTiles(long deadline) {
 		if (clientTicks % LOCAL_TILE_UPLOAD_SCAN_INTERVAL_TICKS != 0 || !connectedToSharedMapServer || !previousMapSyncEnabled
 				|| mapAdapter == null || !mapAdapter.isAvailable()) return;
+		if (System.nanoTime() >= deadline) return;
 		Minecraft minecraft = Minecraft.getInstance();
 		if (minecraft.level == null || minecraft.player == null) return;
 		String dimension = minecraft.level.dimension().location().toString();
 		net.minecraft.world.level.ChunkPos center = minecraft.player.chunkPosition();
-		long now = System.currentTimeMillis();
-		long deadline = System.nanoTime() + LOCAL_TILE_UPLOAD_BUDGET_NANOS;
 		int sent = 0;
+		int scanned = 0;
 		int uploadRadius = localTileUploadRadius(minecraft.options.renderDistance);
-		outer:
-		for (int radius = 0; radius <= uploadRadius && sent < MAX_LOCAL_TILE_UPLOADS_PER_SCAN; radius++) {
-			for (int dx = -radius; dx <= radius && sent < MAX_LOCAL_TILE_UPLOADS_PER_SCAN; dx++) {
-				for (int dz = -radius; dz <= radius && sent < MAX_LOCAL_TILE_UPLOADS_PER_SCAN; dz++) {
-					if (System.nanoTime() >= deadline) break outer;
-					if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) continue;
-					int chunkX = center.x + dx;
-					int chunkZ = center.z + dz;
-					String key = tileKey(dimension, chunkX, chunkZ);
-					long previous = LOCAL_TILE_SCAN_TIMES.getOrDefault(key, 0L);
-					if (now - previous < LOCAL_TILE_SCAN_COOLDOWN_MILLIS) continue;
-					LOCAL_TILE_SCAN_TIMES.put(key, now);
-					if (mapAdapter.localTileState(dimension, chunkX, chunkZ) != XaeroMapAdapter.LocalTileState.READY) continue;
-					if (reportLocalTile(dimension, chunkX, chunkZ)) sent++;
-				}
-			}
+		if (!dimension.equals(localLiveScanDimension) || uploadRadius != localLiveScanRadius) {
+			localLiveScanDimension = dimension;
+			localLiveScanRadius = uploadRadius;
+			localLiveScanCursor = 0;
 		}
-		if (LOCAL_TILE_HINT_TIMES.size() > 65_536) {
-			LOCAL_TILE_HINT_TIMES.entrySet().removeIf(entry -> now - entry.getValue() >= LOCAL_TILE_HINT_COOLDOWN_MILLIS);
-		}
-		if (LOCAL_TILE_SCAN_TIMES.size() > 65_536) {
-			LOCAL_TILE_SCAN_TIMES.entrySet().removeIf(entry -> now - entry.getValue() >= LOCAL_TILE_SCAN_COOLDOWN_MILLIS);
+		int scanCount = localTileScanCount(uploadRadius);
+		while (scanned < MAX_LOCAL_TILE_SCANS_PER_TICK && sent < MAX_LOCAL_TILE_UPLOADS_PER_SCAN
+				&& System.nanoTime() < deadline) {
+			long offset = localTileScanOffset(uploadRadius, localLiveScanCursor);
+			localLiveScanCursor = (localLiveScanCursor + 1) % scanCount;
+			scanned++;
+			int chunkX = center.x + (int) (offset >> 32);
+			int chunkZ = center.z + (int) offset;
+			if (mapAdapter.localTileState(dimension, chunkX, chunkZ) != XaeroMapAdapter.LocalTileState.READY) continue;
+			if (reportLocalTile(dimension, chunkX, chunkZ)) sent++;
 		}
 		if (sent > 0) {
 			XaeroMapsync_r.LOGGER.debug(
-					"Reported local Xaero tiles dimension={} centerChunk={} {} radius={} sent={} scanCacheSize={} hintCacheSize={}",
-					dimension, center.x, center.z, uploadRadius, sent,
-					LOCAL_TILE_SCAN_TIMES.size(), LOCAL_TILE_HINT_TIMES.size());
+					"Reported local Xaero tiles dimension={} centerChunk={} {} radius={} scanned={} queued={} nextCursor={} hintCacheSize={}",
+					dimension, center.x, center.z, uploadRadius, scanned, sent,
+					localLiveScanCursor, LOCAL_TILE_HINT_TIMES.size());
 		}
 	}
 
@@ -468,16 +532,162 @@ public final class SharedMapClient {
 			return false;
 		}
 		MapTile tile = local.get();
+		return uploadLocalTile(tile, true) == LocalUploadResult.QUEUED;
+	}
+
+	private static LocalUploadResult uploadLocalTile(MapTile tile, boolean requireStability) {
+		String key = tileKey(tile.dimension(), tile.chunkX(), tile.chunkZ());
 		long now = System.currentTimeMillis();
-		long previousHash = LOCAL_TILE_UPLOAD_HASHES.getOrDefault(key, Long.MIN_VALUE);
-		long previousTime = LOCAL_TILE_HINT_TIMES.getOrDefault(key, 0L);
-		if (previousHash == tile.contentHash() && now - previousTime < LOCAL_TILE_HINT_COOLDOWN_MILLIS) return false;
-		SharedMapNetworking.sendLocalTileData(tile);
-		XaeroMapsync_r.LOGGER.debug("Uploaded local Xaero tile body {} {} {} hash={}",
-				dimension, chunkX, chunkZ, Long.toUnsignedString(tile.contentHash()));
+		Long previousHash = LOCAL_TILE_UPLOAD_HASHES.get(key);
+		if (previousHash != null && previousHash.longValue() == tile.contentHash()) return LocalUploadResult.UNCHANGED;
+		if (requireStability) {
+			Long pendingHash = LOCAL_TILE_PENDING_HASHES.get(key);
+			if (pendingHash == null || pendingHash.longValue() != tile.contentHash()) {
+				LOCAL_TILE_PENDING_HASHES.put(key, tile.contentHash());
+				LOCAL_TILE_PENDING_SINCE.put(key, now);
+				return LocalUploadResult.PENDING;
+			}
+			if (now - LOCAL_TILE_PENDING_SINCE.getOrDefault(key, now) < LOCAL_TILE_STABILITY_MILLIS)
+				return LocalUploadResult.PENDING;
+		}
+		Long uploadInFlight = LOCAL_TILE_UPLOADS_IN_FLIGHT.get(key);
+		if (uploadInFlight != null && uploadInFlight.longValue() == tile.contentHash()) return LocalUploadResult.PENDING;
+		LOCAL_TILE_UPLOADS_IN_FLIGHT.put(key, tile.contentHash());
+		if (!SharedMapNetworking.sendLocalTileData(tile,
+				successful -> completeLocalTileUpload(key, tile, successful))) {
+			LOCAL_TILE_UPLOADS_IN_FLIGHT.remove(key);
+			return LocalUploadResult.DEFERRED;
+		}
+		XaeroMapsync_r.LOGGER.debug("Queued local Xaero tile upload {} {} {} hash={}",
+				tile.dimension(), tile.chunkX(), tile.chunkZ(), Long.toUnsignedString(tile.contentHash()));
+		return LocalUploadResult.QUEUED;
+	}
+
+	private static void completeLocalTileUpload(String key, MapTile tile, boolean successful) {
+		Long inFlightHash = LOCAL_TILE_UPLOADS_IN_FLIGHT.get(key);
+		if (!shouldCommitLocalTileUpload(inFlightHash, tile.contentHash(), successful)) {
+			if (inFlightHash != null && inFlightHash.longValue() == tile.contentHash()) {
+				LOCAL_TILE_UPLOADS_IN_FLIGHT.remove(key);
+				XaeroMapsync_r.LOGGER.warn("map_sync event=client_tile_upload_failed dimension={} chunk_x={} chunk_z={} hash={}",
+						tile.dimension(), tile.chunkX(), tile.chunkZ(), Long.toUnsignedString(tile.contentHash()));
+			}
+			return;
+		}
+		LOCAL_TILE_UPLOADS_IN_FLIGHT.remove(key);
 		LOCAL_TILE_UPLOAD_HASHES.put(key, tile.contentHash());
-		LOCAL_TILE_HINT_TIMES.put(key, now);
-		return true;
+		LOCAL_TILE_HINT_TIMES.put(key, System.currentTimeMillis());
+		LOCAL_TILE_PENDING_HASHES.remove(key);
+		LOCAL_TILE_PENDING_SINCE.remove(key);
+	}
+
+	static boolean shouldCommitLocalTileUpload(Long inFlightHash, long completedHash, boolean successful) {
+		return successful && inFlightHash != null && inFlightHash.longValue() == completedHash;
+	}
+
+	private static void scanNativeLocalArchive(long deadline) {
+		if (!connectedToSharedMapServer || !previousMapSyncEnabled || mapAdapter == null || !mapAdapter.isAvailable()) return;
+		if (System.nanoTime() >= deadline) return;
+		String dimension = currentDimension();
+		if (dimension == null) return;
+		if (!dimension.equals(localArchiveDimension)) initializeLocalArchiveScan(dimension);
+		if (LOCAL_REGION_SCAN_QUEUE.isEmpty() && activeLocalRegion == null) {
+			if (localArchiveRegionsDiscovered == 0 && clientTicks >= localArchiveRetryTick) {
+				initializeLocalArchiveScan(dimension);
+				return;
+			}
+			if (!localArchiveCompleteLogged && localArchiveRegionsDiscovered > 0) {
+				localArchiveCompleteLogged = true;
+				XaeroMapsync_r.LOGGER.info(
+						"map_sync event=client_archive_scan_complete dimension={} regions={} scanned={} uploaded={} missing={}",
+						dimension, localArchiveRegionsCompleted, localArchiveTilesScanned,
+						localArchiveTilesUploaded, localArchiveTilesMissing);
+			}
+			return;
+		}
+		if (activeLocalRegion == null) {
+			activeLocalRegion = LOCAL_REGION_SCAN_QUEUE.removeFirst();
+			activeLocalRegionCursor = 0;
+		}
+		if (!mapAdapter.prepareLocalRegion(dimension, activeLocalRegion)) return;
+
+		int processed = 0;
+		while (activeLocalRegionCursor < XAERO_REGION_TILE_COUNT && processed < MAX_ARCHIVE_TILES_PER_TICK
+				&& System.nanoTime() < deadline) {
+			int offset = activeLocalRegionCursor++;
+			int chunkX = archiveChunkX(activeLocalRegion, offset);
+			int chunkZ = archiveChunkZ(activeLocalRegion, offset);
+			Optional<MapTile> local = mapAdapter.localTile(dimension, chunkX, chunkZ);
+			localArchiveTilesScanned++;
+			if (local.isPresent()) {
+				LocalUploadResult result = uploadLocalTile(local.get(), false);
+				if (result == LocalUploadResult.QUEUED) localArchiveTilesUploaded++;
+				if (result == LocalUploadResult.DEFERRED) {
+					// Compression backpressure is temporary. Keep this exact archive tile
+					// at the head instead of silently punching a permanent hole.
+					activeLocalRegionCursor--;
+					localArchiveTilesScanned--;
+					break;
+				}
+			} else {
+				localArchiveTilesMissing++;
+			}
+			processed++;
+		}
+		if (activeLocalRegionCursor >= XAERO_REGION_TILE_COUNT) {
+			localArchiveRegionsCompleted++;
+			XaeroMapsync_r.LOGGER.info(
+					"map_sync event=client_archive_region_scanned dimension={} region_x={} region_z={} completed={}/{} scanned={} uploaded={} missing={}",
+					dimension, activeLocalRegion.regionX(), activeLocalRegion.regionZ(),
+					localArchiveRegionsCompleted, localArchiveRegionsDiscovered, localArchiveTilesScanned,
+					localArchiveTilesUploaded, localArchiveTilesMissing);
+			activeLocalRegion = null;
+			activeLocalRegionCursor = 0;
+		}
+	}
+
+	private enum LocalUploadResult { QUEUED, UNCHANGED, PENDING, DEFERRED }
+
+	private static void initializeLocalArchiveScan(String dimension) {
+		resetLocalArchiveScan();
+		localArchiveDimension = dimension;
+		List<XaeroMapAdapter.LocalRegion> regions = mapAdapter.knownLocalRegions(dimension);
+		LOCAL_REGION_SCAN_QUEUE.addAll(regions);
+		localArchiveRegionsDiscovered = regions.size();
+		localArchiveRetryTick = clientTicks + 100;
+		if (!regions.isEmpty()) {
+			XaeroMapsync_r.LOGGER.info("map_sync event=client_archive_scan_started dimension={} regions={}",
+					dimension, regions.size());
+		} else {
+			XaeroMapsync_r.LOGGER.debug(
+					"map_sync event=client_archive_scan_waiting dimension={} reason=no_detected_regions retry_tick={}",
+					dimension, localArchiveRetryTick);
+		}
+	}
+
+	private static void resetLocalArchiveScan() {
+		LOCAL_REGION_SCAN_QUEUE.clear();
+		localArchiveDimension = null;
+		activeLocalRegion = null;
+		activeLocalRegionCursor = 0;
+		localArchiveRetryTick = 0;
+		localArchiveRegionsDiscovered = 0;
+		localArchiveRegionsCompleted = 0;
+		localArchiveTilesScanned = 0L;
+		localArchiveTilesUploaded = 0L;
+		localArchiveTilesMissing = 0L;
+		localArchiveCompleteLogged = false;
+	}
+
+	static int archiveChunkX(XaeroMapAdapter.LocalRegion region, int offset) {
+		if (region == null || offset < 0 || offset >= XAERO_REGION_TILE_COUNT)
+			throw new IllegalArgumentException("Invalid Xaero archive region offset");
+		return region.regionX() * XAERO_REGION_CHUNKS_PER_SIDE + offset % XAERO_REGION_CHUNKS_PER_SIDE;
+	}
+
+	static int archiveChunkZ(XaeroMapAdapter.LocalRegion region, int offset) {
+		if (region == null || offset < 0 || offset >= XAERO_REGION_TILE_COUNT)
+			throw new IllegalArgumentException("Invalid Xaero archive region offset");
+		return region.regionZ() * XAERO_REGION_CHUNKS_PER_SIDE + offset / XAERO_REGION_CHUNKS_PER_SIDE;
 	}
 
 	private static void reportLocalTileReady(String dimension, int chunkX, int chunkZ, long contentHash) {
@@ -593,12 +803,19 @@ public final class SharedMapClient {
 	private static void enqueueTiles(Iterable<MapTileIndexEntry> entries) {
 		int inspected = 0;
 		int queued = 0;
+		int deferred = 0;
 		for (MapTileIndexEntry entry : entries) {
 			inspected++;
 			String key = tileKey(entry.dimension(), entry.chunkX(), entry.chunkZ());
 			if (TILE_DATA.hasRevision(entry.dimension(), entry.chunkX(), entry.chunkZ(), entry.revision())) continue;
 			Long targetRevision = QUEUED_TILE_REVISIONS.get(key);
 			if (targetRevision == null || entry.revision() > targetRevision) {
+				if (targetRevision == null && !canTrackTileTarget(QUEUED_TILE_REVISIONS.size(), MAX_PENDING_TILE_TARGETS)) {
+					mapSyncIncomplete = true;
+					retryMapSyncAtMillis = System.currentTimeMillis() + 5_000L;
+					deferred++;
+					continue;
+				}
 				QUEUED_TILE_REVISIONS.put(key, entry.revision());
 				TILE_CACHE_LOOKUP_QUEUE.add(entry);
 				queued++;
@@ -606,8 +823,8 @@ public final class SharedMapClient {
 		}
 		if (inspected > 0) {
 			XaeroMapsync_r.LOGGER.debug(
-					"Enqueued tile cache lookups inspected={} queued={} lookupQueue={} requestQueue={} targetRevisions={}",
-					inspected, queued, TILE_CACHE_LOOKUP_QUEUE.size(), TILE_REQUEST_QUEUE.size(),
+					"Enqueued tile cache lookups inspected={} queued={} deferred={} lookupQueue={} requestQueue={} targetRevisions={}",
+					inspected, queued, deferred, TILE_CACHE_LOOKUP_QUEUE.size(), TILE_REQUEST_QUEUE.size(),
 					QUEUED_TILE_REVISIONS.size());
 		}
 		pumpTileCacheLookups();
@@ -615,24 +832,36 @@ public final class SharedMapClient {
 	}
 
 	private static void pumpTileCacheLookups() {
-		while (tileCacheLookupsInFlight < MAX_CACHE_LOOKUPS_IN_FLIGHT && !TILE_CACHE_LOOKUP_QUEUE.isEmpty()) {
+		while (cacheLookupsInFlight() < MAX_CACHE_LOOKUPS_IN_FLIGHT && !TILE_CACHE_LOOKUP_QUEUE.isEmpty()) {
 			MapTileIndexEntry entry = TILE_CACHE_LOOKUP_QUEUE.remove();
-			long generation = mapSessionGeneration;
-			tileCacheLookupsInFlight++;
+			long generation = reserveCacheLookup();
+			int inFlight = cacheLookupsInFlight();
 			XaeroMapsync_r.LOGGER.debug("Started tile cache lookup {} {} {} revision={} generation={} inFlight={} remainingQueue={}",
 					entry.dimension(), entry.chunkX(), entry.chunkZ(), entry.revision(), generation,
-					tileCacheLookupsInFlight, TILE_CACHE_LOOKUP_QUEUE.size());
-			TILE_DATA.findCached(entry).thenAccept(cached -> Minecraft.getInstance().execute(
-					() -> handleCachedTile(entry, generation, cached)));
+					inFlight, TILE_CACHE_LOOKUP_QUEUE.size());
+			TILE_DATA.findCached(entry).whenComplete((cached, exception) -> {
+				try {
+					Minecraft.getInstance().execute(() -> handleCachedTile(entry, generation, cached, exception));
+				} catch (RejectedExecutionException rejected) {
+					releaseCacheLookup(generation);
+					XaeroMapsync_r.LOGGER.debug("Discarded cache lookup completion after client executor shutdown generation={}",
+							generation);
+				}
+			});
 		}
 	}
 
-	private static void handleCachedTile(MapTileIndexEntry entry, long generation, Optional<MapTile> cached) {
-		if (generation != mapSessionGeneration) return;
-		tileCacheLookupsInFlight = Math.max(0, tileCacheLookupsInFlight - 1);
+	private static void handleCachedTile(MapTileIndexEntry entry, long generation, Optional<MapTile> cached,
+			Throwable exception) {
+		if (!releaseCacheLookup(generation)) return;
+		if (exception != null) {
+			XaeroMapsync_r.LOGGER.warn("Failed client tile cache lookup {} {} {} revision={}; requesting from server",
+					entry.dimension(), entry.chunkX(), entry.chunkZ(), entry.revision(), exception);
+			cached = Optional.empty();
+		}
 		String key = tileKey(entry.dimension(), entry.chunkX(), entry.chunkZ());
 		Long targetRevision = QUEUED_TILE_REVISIONS.get(key);
-		if (targetRevision == null || targetRevision != entry.revision()) {
+		if (targetRevision == null || targetRevision.longValue() != entry.revision()) {
 			XaeroMapsync_r.LOGGER.debug("Discarded stale cache lookup result {} revision={} targetRevision={} generation={}",
 					key, entry.revision(), targetRevision, generation);
 			pumpTileCacheLookups();
@@ -665,7 +894,7 @@ public final class SharedMapClient {
 	}
 
 	private static void pumpTileRequests() {
-		int limit = SharedMapConfig.maxTileRequestsPerSnapshot();
+		int limit = Math.min(SharedMapConfig.maxTileRequestsPerSnapshot(), MAX_PENDING_TILE_TARGETS);
 		while (canRequestTile(tileRequestsInFlight, TILE_APPLY_QUEUE.size(), limit, MAX_PENDING_TILE_APPLIES)
 				&& !TILE_REQUEST_QUEUE.isEmpty()) {
 			List<MapTileIndexEntry> batch = new ArrayList<>(TileBatchRequestPayload.MAX_REQUESTS);
@@ -694,6 +923,51 @@ public final class SharedMapClient {
 
 	static boolean canRequestTile(int inFlight, int pendingApplies, int requestLimit, int maxPendingApplies) {
 		return inFlight < requestLimit && inFlight + pendingApplies < maxPendingApplies;
+	}
+
+	static boolean releaseCacheLookup(long generation) {
+		synchronized (CACHE_LOOKUP_LOCK) {
+			if (generation != mapSessionGeneration) return false;
+			tileCacheLookupsInFlight = cacheLookupCountAfterCompletion(
+					tileCacheLookupsInFlight, generation, mapSessionGeneration);
+			return true;
+		}
+	}
+
+	static int cacheLookupCountAfterCompletion(int currentCount, long completionGeneration, long activeGeneration) {
+		if (completionGeneration != activeGeneration) return currentCount;
+		return Math.max(0, currentCount - 1);
+	}
+
+	private static long reserveCacheLookup() {
+		synchronized (CACHE_LOOKUP_LOCK) {
+			tileCacheLookupsInFlight++;
+			return mapSessionGeneration;
+		}
+	}
+
+	private static int cacheLookupsInFlight() {
+		synchronized (CACHE_LOOKUP_LOCK) {
+			return tileCacheLookupsInFlight;
+		}
+	}
+
+	private static void advanceCacheLookupGeneration() {
+		synchronized (CACHE_LOOKUP_LOCK) {
+			mapSessionGeneration++;
+			tileCacheLookupsInFlight = 0;
+		}
+	}
+
+	static boolean canTrackTileTarget(int trackedTargets, int limit) {
+		return trackedTargets < limit;
+	}
+
+	private static void enqueueTileRequestFirst(String key, MapTileIndexEntry entry) {
+		boolean alreadyQueued = TILE_REQUEST_QUEUE.stream().anyMatch(candidate ->
+				tileKey(candidate.dimension(), candidate.chunkX(), candidate.chunkZ()).equals(key)
+						&& candidate.revision() >= entry.revision());
+		if (!alreadyQueued) TILE_REQUEST_QUEUE.addFirst(entry);
 	}
 
 	private static void pumpMapNodeRequests() {
@@ -742,6 +1016,15 @@ public final class SharedMapClient {
 		return next == 0L ? 1L : next;
 	}
 
+	static <K, V> Map<K, V> boundedAccessMap(int maximumSize) {
+		return new LinkedHashMap<>(Math.min(maximumSize, 256), 0.75F, true) {
+			@Override
+			protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+				return size() > maximumSize;
+			}
+		};
+	}
+
 	private static String tileKey(String dimension, int chunkX, int chunkZ) {
 		return dimension + ":" + chunkX + ":" + chunkZ;
 	}
@@ -788,6 +1071,7 @@ public final class SharedMapClient {
 			XaeroMapsync_r.LOGGER.info("Shared map dimension changed: {} -> {}; restarting map sync",
 					previousDimension, dimension);
 			previousDimension = dimension;
+			resetLocalArchiveScan();
 			atomicMapSyncClient.setConnected(true);
 		}
 		if (mapEnabled != previousMapSyncEnabled) {
@@ -938,7 +1222,7 @@ public final class SharedMapClient {
 
 	private static void markRootCompleteIfIdle() {
 		if (canCompleteMapRoot(mapSyncIncomplete, mapNodeRequestsInFlight, MAP_NODE_QUEUE.size(),
-				tileCacheLookupsInFlight, TILE_CACHE_LOOKUP_QUEUE.size(), tileRequestsInFlight,
+				cacheLookupsInFlight(), TILE_CACHE_LOOKUP_QUEUE.size(), tileRequestsInFlight,
 				TILE_REQUEST_QUEUE.size(), TILE_APPLY_QUEUE.size(), QUEUED_TILE_REVISIONS.size(),
 				TILE_DATA.pendingWriteCount())
 				&& syncingDimension != null && MAP_TILES.matchesRootHash(syncingDimension, syncingRootHash)
@@ -968,7 +1252,7 @@ public final class SharedMapClient {
 				mapSessionGeneration, TILE_CACHE_LOOKUP_QUEUE.size(), TILE_REQUEST_QUEUE.size(),
 				TILE_APPLY_QUEUE.size(), MAP_NODE_QUEUE.size(), QUEUED_TILE_REVISIONS.size(),
 				tileRequestsInFlight, mapNodeRequestsInFlight, TILE_DATA.pendingWriteCount());
-		mapSessionGeneration++;
+		advanceCacheLookupGeneration();
 		TILE_CACHE_LOOKUP_QUEUE.clear();
 		TILE_REQUEST_QUEUE.clear();
 		TILE_APPLY_QUEUE.clear();
@@ -976,14 +1260,17 @@ public final class SharedMapClient {
 		QUEUED_TILE_REVISIONS.clear();
 		IN_FLIGHT_TILE_REQUESTS.clear();
 		PENDING_TILE_APPLIES.clear();
-		LOCAL_TILE_REVISIONS.clear();
 		LOCAL_TILE_HINT_TIMES.clear();
-		LOCAL_TILE_SCAN_TIMES.clear();
 		LOCAL_TILE_UPLOAD_HASHES.clear();
+		LOCAL_TILE_PENDING_HASHES.clear();
+		LOCAL_TILE_PENDING_SINCE.clear();
+		LOCAL_TILE_UPLOADS_IN_FLIGHT.clear();
+		localLiveScanDimension = null;
+		localLiveScanRadius = -1;
+		localLiveScanCursor = 0;
 		PENDING_MAP_REQUEST_IDS.clear();
 		MERKLE.replace(java.util.List.of());
 		tileRequestsInFlight = 0;
-		tileCacheLookupsInFlight = 0;
 		mapNodeRequestsInFlight = 0;
 		activeMapSyncId = 0L;
 		mapSyncIncomplete = false;

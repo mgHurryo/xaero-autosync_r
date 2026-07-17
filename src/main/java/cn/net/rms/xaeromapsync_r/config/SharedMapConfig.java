@@ -34,6 +34,7 @@ public final class SharedMapConfig {
 		migrateDefault("network.global_bytes_per_tick", "262144", "2097152");
 		VALUES.setProperty("protocol.version", Integer.toString(SharedMapProtocolDefaults.PROTOCOL_VERSION));
 		VALUES.setProperty("map.format.version", Integer.toString(SharedMapProtocolDefaults.MAP_FORMAT_VERSION));
+		normalizeIntegerValues();
 		save(path);
 	}
 
@@ -67,6 +68,10 @@ public final class SharedMapConfig {
 
 	public static boolean mapSyncEnabled() { return booleanValue("map.sync.enabled", true); }
 	public static boolean mapSyncShadowMode() { return booleanValue("map.sync.shadow_mode", false); }
+	/** Server terrain sampling is opt-in; shared map bodies normally come from Xaero clients. */
+	public static boolean serverMapRenderingEnabled() {
+		return booleanValue("map.sync.server_render.enabled", false);
+	}
 
 	public static boolean highLoadPause() {
 		return booleanValue("tasks.high_load_pause", true);
@@ -158,6 +163,46 @@ public final class SharedMapConfig {
 		return value == null ? fallback : Boolean.parseBoolean(value);
 	}
 
+	private static void normalizeIntegerValues() {
+		normalizeInteger("network.max_packet_bytes", SharedMapProtocolDefaults.MAX_PACKET_BYTES);
+		normalizeInteger("network.max_tile_requests_per_snapshot", 256);
+		normalizeInteger("network.bytes_per_player_per_tick", 262_144);
+		normalizeInteger("network.global_bytes_per_tick", 2_097_152);
+		normalizeInteger("tasks.high_load_mspt_threshold", 45);
+		normalizeInteger("tasks.dirty_chunks_per_tick", 2_048);
+		normalizeInteger("tasks.dirty_chunk_scan_per_tick", 4_096);
+		normalizeInteger("tasks.dirty_drain_budget_per_tick", 2_048);
+		normalizeInteger("tasks.max_tile_renders_per_tick", 2_048);
+		normalizeInteger("tasks.map_render_budget_ms", 40);
+		normalizeInteger("activity.storm_block_changes_per_tick", 4_096);
+		normalizeInteger("activity.storm_dirty_chunks_per_tick", 16);
+		normalizeInteger("activity.storm_tnt_entities_per_tick", 64);
+		normalizeInteger("activity.storm_explosions_per_tick", 8);
+		normalizeInteger("activity.storm_piston_actions_per_tick", 128);
+		normalizeInteger("activity.storm_light_updates_per_tick", 2_048);
+		normalizeInteger("activity.storm_cooldown_ticks", 100);
+		normalizeInteger("activity.stable_ticks", 200);
+		normalizeInteger("waypoints.max_per_player", 256);
+		normalizeInteger("waypoints.max_total", 4_096);
+	}
+
+	private static void normalizeInteger(String key, int fallback) {
+		String raw = VALUES.getProperty(key);
+		int normalized = normalizedPositiveInteger(raw, fallback);
+		if (raw != null && raw.equals(Integer.toString(normalized))) return;
+		XaeroMapsync_r.LOGGER.warn("Invalid config value for {}, using {}", key, fallback);
+		VALUES.setProperty(key, Integer.toString(normalized));
+	}
+
+	static int normalizedPositiveInteger(String raw, int fallback) {
+		try {
+			int value = Integer.parseInt(raw);
+			return value > 0 ? value : fallback;
+		} catch (NumberFormatException exception) {
+			return fallback;
+		}
+	}
+
 	private static Properties defaults() {
 		Properties defaults = new Properties();
 		defaults.setProperty("protocol.version", Integer.toString(SharedMapProtocolDefaults.PROTOCOL_VERSION));
@@ -170,6 +215,7 @@ public final class SharedMapConfig {
 		defaults.setProperty("network.global_bytes_per_tick", "2097152");
 		defaults.setProperty("map.sync.enabled", "true");
 		defaults.setProperty("map.sync.shadow_mode", "false");
+		defaults.setProperty("map.sync.server_render.enabled", "false");
 		defaults.setProperty("exploration.auto_view_distance", "true");
 		defaults.setProperty("exploration.edge_chunk_margin", "1");
 		defaults.setProperty("tasks.normal_tick_budget_ms", "2");

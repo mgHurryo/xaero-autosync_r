@@ -25,12 +25,15 @@ public final class MapTileIndexStore {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 	static final String INDEX_FILE_NAME = "map_patch_index-v6.json";
 	private final Map<String, MapTileIndexEntry> tiles = new LinkedHashMap<>();
+	private List<MerkleNode> cachedMerkleSnapshot = List.of();
+	private boolean merkleSnapshotDirty = true;
 	private long nextRevision = 1L;
 	private int surfaceSamplerVersion = MapTileDebugRenderer.SURFACE_SAMPLER_VERSION;
 
 	public synchronized void load(MinecraftServer server) {
 		Path path = path(server);
 		tiles.clear();
+		invalidateMerkleSnapshot();
 		nextRevision = 1L;
 		surfaceSamplerVersion = MapTileDebugRenderer.SURFACE_SAMPLER_VERSION;
 		if (!Files.exists(path)) {
@@ -84,11 +87,12 @@ public final class MapTileIndexStore {
 		}
 		MapTileIndexEntry entry = new MapTileIndexEntry(tile.dimension(), tile.chunkX(), tile.chunkZ(), tile.contentHash(), nextRevision++, System.currentTimeMillis());
 		tiles.put(key, entry);
+		invalidateMerkleSnapshot();
 		return entry;
 	}
 
 	public synchronized long rootHash() {
-		return MerkleTreeBuilder.rootHash(MerkleTreeBuilder.build(tiles.values()));
+		return MerkleTreeBuilder.rootHash(merkleSnapshotInternal());
 	}
 
 	public synchronized int totalCount() {
@@ -104,7 +108,7 @@ public final class MapTileIndexStore {
 		for (MapTileIndexEntry entry : tiles.values()) {
 			if (dimension.equals(entry.dimension())) entries.add(entry);
 		}
-		long epoch = MerkleTreeBuilder.rootHash(MerkleTreeBuilder.build(entries));
+		long epoch = rootHash(dimension);
 		return new DimensionSnapshot(epoch, List.copyOf(entries));
 	}
 
@@ -117,11 +121,11 @@ public final class MapTileIndexStore {
 	}
 
 	public synchronized Collection<MerkleNode> merkleSnapshot() {
-		return MerkleTreeBuilder.build(tiles.values());
+		return List.copyOf(merkleSnapshotInternal());
 	}
 
 	public synchronized List<MerkleNode> merkleRoots() {
-		return MerkleTreeBuilder.roots(MerkleTreeBuilder.build(tiles.values()));
+		return MerkleTreeBuilder.roots(merkleSnapshotInternal());
 	}
 
 	public synchronized long rootHash(String dimension) {
@@ -133,9 +137,7 @@ public final class MapTileIndexStore {
 	}
 
 	private List<MerkleNode> merkleSnapshot(String dimension) {
-		List<MapTileIndexEntry> entries = new ArrayList<>();
-		for (MapTileIndexEntry entry : tiles.values()) if (entry.dimension().equals(dimension)) entries.add(entry);
-		return MerkleTreeBuilder.build(entries);
+		return merkleSnapshotInternal().stream().filter(node -> node.dimension().equals(dimension)).toList();
 	}
 
 	public synchronized List<MerkleNode> merkleChildren(String dimension, int level, int nodeX, int nodeZ) {
@@ -144,7 +146,7 @@ public final class MapTileIndexStore {
 
 	public synchronized List<MerkleNode> merkleChildren(Collection<MerkleNodeAddress> addresses) {
 		if (addresses.isEmpty()) return Collections.emptyList();
-		List<MerkleNode> snapshot = MerkleTreeBuilder.build(tiles.values());
+		List<MerkleNode> snapshot = merkleSnapshotInternal();
 		List<MerkleNode> children = new ArrayList<>();
 		for (MerkleNodeAddress address : addresses) {
 			if (address.level() <= 0) continue;
@@ -163,6 +165,19 @@ public final class MapTileIndexStore {
 
 	public synchronized Optional<MapTileIndexEntry> find(String dimension, int chunkX, int chunkZ) {
 		return Optional.ofNullable(tiles.get(key(dimension, chunkX, chunkZ)));
+	}
+
+	private List<MerkleNode> merkleSnapshotInternal() {
+		if (merkleSnapshotDirty) {
+			cachedMerkleSnapshot = List.copyOf(MerkleTreeBuilder.build(tiles.values()));
+			merkleSnapshotDirty = false;
+		}
+		return cachedMerkleSnapshot;
+	}
+
+	private void invalidateMerkleSnapshot() {
+		cachedMerkleSnapshot = List.of();
+		merkleSnapshotDirty = true;
 	}
 
 	private static String key(String dimension, int chunkX, int chunkZ) {

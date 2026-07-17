@@ -4,10 +4,13 @@ import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 import cn.net.rms.xaeromapsync_r.map.MapTile;
 import cn.net.rms.xaeromapsync_r.map.MapTileDataStore;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
+import cn.net.rms.xaeromapsync_r.map.MapPatchManifest;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -16,10 +19,12 @@ import java.util.concurrent.TimeUnit;
 import net.minecraft.world.level.ChunkPos;
 
 public final class ClientMapTileCache {
-	private final Map<String, Long> appliedRevisions = new LinkedHashMap<>();
-	private final Map<String, Long> cachedHashes = new LinkedHashMap<>();
-	private final Map<String, Long> cachedRevisions = new LinkedHashMap<>();
+	private static final int MAX_TRACKED_TILE_METADATA = 65_536;
+	private final Map<String, Long> appliedRevisions = boundedAccessMap(MAX_TRACKED_TILE_METADATA);
+	private final Map<String, Long> cachedHashes = boundedAccessMap(MAX_TRACKED_TILE_METADATA);
+	private final Map<String, Long> cachedRevisions = boundedAccessMap(MAX_TRACKED_TILE_METADATA);
 	private final Map<String, PendingCacheWrite> pendingWrites = new LinkedHashMap<>();
+	private final Set<String> writesInFlight = new HashSet<>();
 	private final MapTileDataStore tileBodies = new MapTileDataStore();
 	private ExecutorService readers;
 	private ScheduledExecutorService retries;
@@ -37,6 +42,7 @@ public final class ClientMapTileCache {
 			thread.setDaemon(true);
 			return thread;
 		});
+		retries.scheduleWithFixedDelay(this::drainPendingWritesSafely, 25L, 25L, TimeUnit.MILLISECONDS);
 	}
 
 	public synchronized boolean hasRevision(String dimension, int chunkX, int chunkZ, long revision) {
@@ -68,38 +74,67 @@ public final class ClientMapTileCache {
 			cachedRevisions.put(key, revision);
 			cachedHashes.put(key, tile.contentHash());
 		}
-		PendingCacheWrite pending = new PendingCacheWrite(tile, revision, 0);
+		PendingCacheWrite pending = new PendingCacheWrite(tile, revision, 0, 0L);
 		synchronized (this) { pendingWrites.put(key, pending); }
-		attemptCacheWrite(key, pending);
+		drainPendingWritesSafely();
 	}
 
-	private void attemptCacheWrite(String key, PendingCacheWrite pending) {
-		synchronized (this) {
-			if (pendingWrites.get(key) != pending || retries == null) return;
+	/** Returns true only when every tile in a possibly reshaped patch is already applied. */
+	public synchronized boolean hasApplied(MapPatchManifest manifest) {
+		for (MapPatchManifest.TileReference tile : manifest.tiles()) {
+			if (appliedRevisions.getOrDefault(key(manifest.key().dimension(), tile.chunkX(), tile.chunkZ()), -1L)
+					< tile.revision()) return false;
 		}
-		boolean accepted = tileBodies.putAsynchronously(pending.tile, successful -> {
+		return !manifest.tiles().isEmpty();
+	}
+
+	private void drainPendingWritesSafely() {
+		try {
+			drainPendingWrites();
+		} catch (RuntimeException exception) {
+			XaeroMapsync_r.LOGGER.warn("map_sync event=client_cache_drain_failed pending={}", pendingWriteCount(), exception);
+		}
+	}
+
+	private void drainPendingWrites() {
+		long now = System.currentTimeMillis();
+		java.util.List<Map.Entry<String, PendingCacheWrite>> candidates;
+		synchronized (this) {
+			if (retries == null) return;
+			candidates = pendingWrites.entrySet().stream()
+					.filter(entry -> !writesInFlight.contains(entry.getKey()))
+					.filter(entry -> entry.getValue().retryNotBeforeMillis <= now)
+					.limit(64).map(entry -> Map.entry(entry.getKey(), entry.getValue())).toList();
+		}
+		for (Map.Entry<String, PendingCacheWrite> candidate : candidates) {
+			String key = candidate.getKey();
+			PendingCacheWrite pending = candidate.getValue();
+			if (!tileBodies.hasWriteCapacity(pending.tile.dimension(), pending.tile.chunkX(), pending.tile.chunkZ()))
+				continue;
+			synchronized (this) {
+				if (pendingWrites.get(key) != pending || !writesInFlight.add(key)) continue;
+			}
+			boolean accepted = tileBodies.putAsynchronously(pending.tile,
+					successful -> completeCacheWrite(key, pending, successful));
+			if (!accepted) {
+				synchronized (this) { writesInFlight.remove(key); }
+			}
+		}
+	}
+
+	private void completeCacheWrite(String key, PendingCacheWrite completed, boolean successful) {
+		synchronized (this) {
+			writesInFlight.remove(key);
+			if (pendingWrites.get(key) != completed) return;
 			if (successful) {
-				synchronized (ClientMapTileCache.this) {
-					if (pendingWrites.get(key) == pending) pendingWrites.remove(key);
-				}
+				pendingWrites.remove(key);
 				return;
 			}
-			scheduleCacheRetry(key, pending);
-		});
-		if (!accepted) scheduleCacheRetry(key, pending);
-	}
-
-	private void scheduleCacheRetry(String key, PendingCacheWrite failed) {
-		ScheduledExecutorService activeRetries;
-		PendingCacheWrite retry = new PendingCacheWrite(failed.tile, failed.revision, failed.attempts + 1);
-		synchronized (this) {
-			if (pendingWrites.get(key) != failed) return;
-			pendingWrites.put(key, retry);
-			activeRetries = retries;
+			int attempts = completed.attempts + 1;
+			long delayMillis = Math.min(5_000L, 100L << Math.min(attempts, 5));
+			pendingWrites.put(key, new PendingCacheWrite(completed.tile, completed.revision, attempts,
+					System.currentTimeMillis() + delayMillis));
 		}
-		if (activeRetries == null) return;
-		long delayMillis = Math.min(5_000L, 100L << Math.min(retry.attempts, 5));
-		activeRetries.schedule(() -> attemptCacheWrite(key, retry), delayMillis, TimeUnit.MILLISECONDS);
 	}
 
 	public CompletableFuture<Optional<MapTile>> findCached(MapTileIndexEntry entry) {
@@ -139,6 +174,7 @@ public final class ClientMapTileCache {
 	}
 
 	public void stop() {
+		flushPendingWrites();
 		ExecutorService activeReaders;
 		ScheduledExecutorService activeRetries;
 		synchronized (this) {
@@ -147,13 +183,39 @@ public final class ClientMapTileCache {
 			activeRetries = retries;
 			retries = null;
 			pendingWrites.clear();
+			writesInFlight.clear();
 		}
 		if (activeReaders != null) activeReaders.shutdownNow();
 		if (activeRetries != null) activeRetries.shutdownNow();
 		tileBodies.stop();
 	}
 
-	private record PendingCacheWrite(MapTile tile, long revision, int attempts) {}
+	private void flushPendingWrites() {
+		long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10L);
+		while (pendingWriteCount() > 0 && System.nanoTime() < deadline) {
+			drainPendingWritesSafely();
+			try {
+				Thread.sleep(10L);
+			} catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+				break;
+			}
+		}
+		int remaining = pendingWriteCount();
+		if (remaining > 0) XaeroMapsync_r.LOGGER.warn(
+				"map_sync event=client_cache_flush_timeout pending={} timeout_ms=10000", remaining);
+	}
+
+	private record PendingCacheWrite(MapTile tile, long revision, int attempts, long retryNotBeforeMillis) {}
+
+	static <K, V> Map<K, V> boundedAccessMap(int maximumEntries) {
+		if (maximumEntries <= 0) throw new IllegalArgumentException("Maximum cache entries must be positive");
+		return new LinkedHashMap<>(128, 0.75F, true) {
+			@Override protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+				return size() > maximumEntries;
+			}
+		};
+	}
 
 	private static String key(String dimension, int chunkX, int chunkZ) {
 		return dimension + ":" + ChunkPos.asLong(chunkX, chunkZ);

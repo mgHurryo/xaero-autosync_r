@@ -13,8 +13,9 @@ final class MapPatchPayloadCodec {
 
 	static void writeManifest(FriendlyByteBuf buffer, MapPatchManifest manifest) {
 		buffer.writeUtf(manifest.key().dimension(), MAX_DIMENSION_LENGTH);
-		buffer.writeInt(manifest.key().patchX());
-		buffer.writeInt(manifest.key().patchZ());
+		buffer.writeInt(manifest.key().minChunkX());
+		buffer.writeInt(manifest.key().minChunkZ());
+		buffer.writeVarInt(manifest.key().sideLength());
 		buffer.writeLong(manifest.epoch());
 		buffer.writeVarLong(manifest.revision());
 		buffer.writeLong(manifest.contentHash());
@@ -28,12 +29,14 @@ final class MapPatchPayloadCodec {
 	}
 
 	static MapPatchManifest readManifest(FriendlyByteBuf buffer) {
-		MapPatchKey key = new MapPatchKey(buffer.readUtf(MAX_DIMENSION_LENGTH), buffer.readInt(), buffer.readInt());
+		MapPatchKey key = MapPatchKey.square(buffer.readUtf(MAX_DIMENSION_LENGTH), buffer.readInt(), buffer.readInt(),
+				buffer.readVarInt());
 		long epoch = buffer.readLong();
 		long revision = buffer.readVarLong();
 		long declaredHash = buffer.readLong();
 		int count = buffer.readVarInt();
-		if (count != MapPatchKey.TILE_COUNT) throw new IllegalArgumentException("Invalid patch manifest tile count: " + count);
+		if (count != key.tileCount())
+			throw new IllegalArgumentException("Invalid patch manifest tile count: " + count);
 		List<MapPatchManifest.TileReference> tiles = new ArrayList<>(count);
 		for (int index = 0; index < count; index++) {
 			tiles.add(new MapPatchManifest.TileReference(buffer.readInt(), buffer.readInt(), buffer.readVarLong(), buffer.readLong()));

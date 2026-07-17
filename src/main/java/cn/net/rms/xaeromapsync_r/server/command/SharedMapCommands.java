@@ -352,10 +352,10 @@ public final class SharedMapCommands {
 		String state = SharedMapServer.clientState(player.getUUID()).map(value -> "accepted=" + value.accepted()
 				+ ", traceId=" + value.traceId() + ", connectedMs=" + (System.currentTimeMillis() - value.connectedAtMillis()))
 				.orElse("not-handshaken");
-		int completePatches = SharedMapServer.patches().manifests(dimension).size();
+		int publishedPatches = SharedMapServer.patches().manifests(dimension).size();
 		source.sendSuccess(new TextComponent("Shared map player=" + player.getGameProfile().getName() + ", " + state
 				+ ", dimension=" + dimension + ", chunk=" + player.chunkPosition().x + "," + player.chunkPosition().z
-				+ ", completePatches=" + completePatches + ", traceEnabled="
+				+ ", publishedPatches=" + publishedPatches + ", traceEnabled="
 				+ SharedMapServer.traceEnabled(player.getUUID())), false);
 		return 1;
 	}

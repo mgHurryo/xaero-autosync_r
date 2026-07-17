@@ -7,12 +7,16 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
 import net.minecraft.client.Minecraft;
@@ -29,6 +33,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 	static final String SUPPORTED_VERSION = "1.25.1";
 	private static final int TILE_SIDE = 16;
 	private static final int TILE_AREA = TILE_SIDE * TILE_SIDE;
+	private static final Pattern XAERO_REGION_FILE = Pattern.compile("(-?\\d+)_(-?\\d+)\\.zip");
 
 	private final XaeroRuntime runtime;
 	private boolean available;
@@ -158,6 +163,32 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		}
 	}
 
+	@Override
+	public List<LocalRegion> knownLocalRegions(String dimension) {
+		if (!available) return List.of();
+		try {
+			return runtime.knownLocalRegions(dimension);
+		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
+			if (!isNotReady(exception)) XaeroMapsync_r.LOGGER.warn(
+					"map_sync event=client_archive_discovery_deferred dimension={} reason=runtime_not_ready",
+					dimension, exception);
+			return List.of();
+		}
+	}
+
+	@Override
+	public boolean prepareLocalRegion(String dimension, LocalRegion region) {
+		if (!available) return false;
+		try {
+			return runtime.prepareLocalRegion(dimension, region);
+		} catch (ReflectiveOperationException | RuntimeException | LinkageError exception) {
+			if (!isNotReady(exception)) XaeroMapsync_r.LOGGER.warn(
+					"map_sync event=client_archive_region_deferred dimension={} region_x={} region_z={} reason=runtime_not_ready",
+					dimension, region.regionX(), region.regionZ(), exception);
+			return false;
+		}
+	}
+
 	private static boolean isNotReady(Throwable exception) {
 		return exception instanceof IllegalStateException && exception.getMessage() != null
 				&& (exception.getMessage().contains("not initialized")
@@ -181,6 +212,37 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		return Math.floorDiv(chunkCoordinate, 4);
 	}
 
+	static Optional<XaeroMapAdapter.LocalRegion> regionFromFileName(String fileName) {
+		if (fileName == null) return Optional.empty();
+		Matcher matcher = XAERO_REGION_FILE.matcher(fileName);
+		if (!matcher.matches()) return Optional.empty();
+		try {
+			return Optional.of(new XaeroMapAdapter.LocalRegion(Integer.parseInt(matcher.group(1)),
+					Integer.parseInt(matcher.group(2))));
+		} catch (NumberFormatException exception) {
+			return Optional.empty();
+		}
+	}
+
+	static List<Path> xaeroRegionFolderCandidates(Path mainFolder, String multiworld) {
+		if (mainFolder == null || multiworld == null || multiworld.isBlank()) return List.of();
+		Path nativeFolder = mainFolder.resolve(multiworld);
+		if (multiworld.startsWith("mw$")) return List.of(nativeFolder);
+		return List.of(nativeFolder, mainFolder.resolve("mw$" + multiworld));
+	}
+
+	static Optional<Path> uniqueXaeroMultiworldFolder(Path mainFolder) {
+		if (mainFolder == null || !Files.isDirectory(mainFolder)) return Optional.empty();
+		try (java.util.stream.Stream<Path> children = Files.list(mainFolder)) {
+			List<Path> matches = children.filter(Files::isDirectory)
+					.filter(path -> path.getFileName().toString().startsWith("mw$"))
+					.limit(2).toList();
+			return matches.size() == 1 ? Optional.of(matches.get(0)) : Optional.empty();
+		} catch (java.io.IOException exception) {
+			return Optional.empty();
+		}
+	}
+
 	static boolean shouldRequestRegionLoad(byte loadState, boolean reloadRequested, boolean queuedForLoad,
 			boolean recacheRequested) {
 		return (loadState == 0 || loadState == 4) && !recacheRequested
@@ -193,6 +255,11 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 
 	static boolean isUsableLocalSnapshot(MapTile tile) {
 		return tile.hasRenderableSurface();
+	}
+
+	static LocalTileState localOwnership(boolean chunkLoaded, boolean xaeroReady) {
+		if (!chunkLoaded) return LocalTileState.REMOTE;
+		return xaeroReady ? LocalTileState.READY : LocalTileState.GENERATING;
 	}
 
 	private static void validateTile(MapTile tile) {
@@ -246,6 +313,14 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 				throws ReflectiveOperationException {
 			return Optional.empty();
 		}
+
+		default List<LocalRegion> knownLocalRegions(String dimension) throws ReflectiveOperationException {
+			return List.of();
+		}
+
+		default boolean prepareLocalRegion(String dimension, LocalRegion region) throws ReflectiveOperationException {
+			return false;
+		}
 	}
 
 	private static final class Xaero1251Runtime implements XaeroRuntime {
@@ -264,6 +339,21 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Method getMapSaveLoad;
 		private final Method getMapTile;
 		private final Method getCurrentDimension;
+		private final Method getMapWorld;
+		private final Method getCurrentMapDimension;
+		private final Method getCurrentMapDimensionId;
+		private final Method getMapDimension;
+		private final Method getMapWorldCurrentMultiworld;
+		private final Method getMapWorldMainId;
+		private final Method getDimensionName;
+		private final Method getMainFolder;
+		private final Method getCurrentWorldId;
+		private final Method getDetectedRegions;
+		private final Method getMainFolderPath;
+		private final Method getCurrentMultiworld;
+		private final Method getDetectedRegionX;
+		private final Method getDetectedRegionZ;
+		private final Method chunkUpdateCallback;
 		private final Method waitForLoadingToFinish;
 		private final Method getChunk;
 		private final Method setChunk;
@@ -325,7 +415,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 		private final Field chunkIncludeInSaveField;
 		private final Field chunkHasHadTerrainField;
 		private final Field regionHasHadTerrainField;
-		private final Field chunkCleanFieldHolder;
+		private final Map<Long, Long> localRegenerationRequests = new LinkedHashMap<>();
 
 		Xaero1251Runtime() throws ReflectiveOperationException {
 			ClassLoader loader = ReflectiveXaeroMapAdapter.class.getClassLoader();
@@ -343,6 +433,10 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			Class<?> mapTilePoolClass = Class.forName("xaero.map.pool.MapTilePool", false, loader);
 			Class<?> blockStateShortShapeCacheClass = Class.forName("xaero.map.cache.BlockStateShortShapeCache", false, loader);
 			Class<?> mapSaveLoadClass = Class.forName("xaero.map.file.MapSaveLoad", false, loader);
+			Class<?> mapWorldClass = Class.forName("xaero.map.world.MapWorld", false, loader);
+			Class<?> mapDimensionClass = Class.forName("xaero.map.world.MapDimension", false, loader);
+			Class<?> resourceKeyClass = Class.forName("net.minecraft.resources.ResourceKey", false, loader);
+			Class<?> regionDetectionClass = Class.forName("xaero.map.file.RegionDetection", false, loader);
 			Class<?> xaeroCoreClass = Class.forName("xaero.map.core.XaeroWorldMapCore", false, loader);
 
 			currentSession = method(sessionClass, sessionClass, "getCurrentSession");
@@ -353,6 +447,21 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			getMapSaveLoad = method(mapProcessorClass, mapSaveLoadClass, "getMapSaveLoad");
 			getMapTile = method(mapProcessorClass, xaeroMapTileClass, "getMapTile", int.class, int.class);
 			getCurrentDimension = method(mapProcessorClass, String.class, "getCurrentDimension");
+			getMapWorld = method(mapProcessorClass, mapWorldClass, "getMapWorld");
+			getCurrentMapDimension = method(mapWorldClass, mapDimensionClass, "getCurrentDimension");
+			getCurrentMapDimensionId = method(mapWorldClass, resourceKeyClass, "getCurrentDimensionId");
+			getMapDimension = method(mapWorldClass, mapDimensionClass, "getDimension", resourceKeyClass);
+			getMapWorldCurrentMultiworld = method(mapWorldClass, String.class, "getCurrentMultiworld");
+			getMapWorldMainId = method(mapWorldClass, String.class, "getMainId");
+			getDimensionName = method(mapProcessorClass, String.class, "getDimensionName", resourceKeyClass);
+			getMainFolder = method(mapSaveLoadClass, Path.class, "getMainFolder", String.class, String.class);
+			getCurrentWorldId = method(mapProcessorClass, String.class, "getCurrentWorldId");
+			getDetectedRegions = method(mapDimensionClass, java.util.Hashtable.class, "getDetectedRegions");
+			getMainFolderPath = method(mapDimensionClass, Path.class, "getMainFolderPath");
+			getCurrentMultiworld = method(mapDimensionClass, String.class, "getCurrentMultiworld");
+			getDetectedRegionX = method(regionDetectionClass, int.class, "getRegionX");
+			getDetectedRegionZ = method(regionDetectionClass, int.class, "getRegionZ");
+			chunkUpdateCallback = method(xaeroCoreClass, "chunkUpdateCallback", int.class, int.class);
 			waitForLoadingToFinish = method(mapProcessorClass, "waitForLoadingToFinish", Runnable.class);
 			getChunk = method(mapRegionClass, mapTileChunkClass, "getChunk", int.class, int.class);
 			setChunk = method(mapRegionClass, "setChunk", int.class, int.class, mapTileChunkClass);
@@ -414,7 +523,6 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			chunkIncludeInSaveField = field(mapTileChunkClass, "includeInSave", boolean.class);
 			chunkHasHadTerrainField = field(mapTileChunkClass, "hasHadTerrain", boolean.class);
 			regionHasHadTerrainField = field(mapRegionClass, "hasHadTerrain", boolean.class);
-			chunkCleanFieldHolder = field(xaeroCoreClass, "chunkCleanField", Field.class);
 			XaeroMapsync_r.LOGGER.debug(
 					"Validated Xaero 1.25.1 reflective signatures: session={} processor={} region={} tileChunk={} tile={} block={} biomeKey={}",
 					sessionClass.getName(), mapProcessorClass.getName(), mapRegionClass.getName(),
@@ -429,29 +537,41 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					minecraft.level.dimension().location().toString())) {
 				return LocalTileState.REMOTE;
 			}
+			LevelChunk chunk = minecraft.level.getChunkSource().getChunkNow(chunkX, chunkZ);
+			if (chunk == null) return LocalTileState.REMOTE;
 			Object session = invoke(currentSession, null);
 			if (session == null) throw new IllegalStateException("Xaero WorldMapSession is not initialized");
 			Object processor = invoke(getMapProcessor, session);
 			if (processor == null) throw new IllegalStateException("Xaero MapProcessor is not initialized");
 			Object xaeroTile = invoke(getMapTile, processor, chunkX, chunkZ);
-			if (xaeroTile != null && (Boolean) invoke(isTileLoaded, xaeroTile)
+			boolean xaeroReady = xaeroTile != null && (Boolean) invoke(isTileLoaded, xaeroTile)
 					&& (Boolean) invoke(wasTileWrittenOnce, xaeroTile)
-					&& hasRenderableTileData(xaeroTile)) {
+					&& hasRenderableTileData(xaeroTile);
+			if (xaeroReady) {
 				XaeroMapsync_r.LOGGER.debug("Xaero reports local tile ready dimension={} chunk={} {}",
 						dimension, chunkX, chunkZ);
-				return LocalTileState.READY;
 			}
-			LevelChunk chunk = minecraft.level.getChunkSource().getChunkNow(chunkX, chunkZ);
-			if (chunk == null) return LocalTileState.REMOTE;
-			Field chunkCleanField = (Field) chunkCleanFieldHolder.get(null);
-			LocalTileState state = chunkCleanField != null && chunkCleanField.getBoolean(chunk)
-					? LocalTileState.REMOTE
-					: LocalTileState.GENERATING;
+			if (!xaeroReady) requestLocalRegeneration(chunkX, chunkZ);
+			LocalTileState state = localOwnership(true, xaeroReady);
 			if (state == LocalTileState.GENERATING) {
 				XaeroMapsync_r.LOGGER.debug("Xaero local chunk is dirty/generating dimension={} chunk={} {}",
 						dimension, chunkX, chunkZ);
 			}
 			return state;
+		}
+
+		private void requestLocalRegeneration(int chunkX, int chunkZ) throws ReflectiveOperationException {
+			long key = net.minecraft.world.level.ChunkPos.asLong(chunkX, chunkZ);
+			long now = System.currentTimeMillis();
+			long previous = localRegenerationRequests.getOrDefault(key, 0L);
+			if (now - previous < 1_000L) return;
+			localRegenerationRequests.put(key, now);
+			if (localRegenerationRequests.size() > 1_024)
+				localRegenerationRequests.remove(localRegenerationRequests.keySet().iterator().next());
+			invoke(chunkUpdateCallback, null, chunkX, chunkZ);
+			XaeroMapsync_r.LOGGER.debug(
+					"map_sync event=local_xaero_regeneration_requested chunk_x={} chunk_z={} reason=loaded_placeholder",
+					chunkX, chunkZ);
 		}
 
 		@Override
@@ -482,6 +602,110 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			XaeroMapsync_r.LOGGER.debug("Xaero local snapshot result dimension={} chunk={} {} present={}",
 					dimension, chunkX, chunkZ, snapshot[0] != null);
 			return Optional.ofNullable(snapshot[0]);
+		}
+
+		@Override
+		public List<LocalRegion> knownLocalRegions(String dimension) throws ReflectiveOperationException {
+			Minecraft minecraft = Minecraft.getInstance();
+			if (!minecraft.isSameThread() || !isSnapshotDimensionCurrent(dimension, null, minecraft)) return List.of();
+			Object session = invoke(currentSession, null);
+			if (session == null) throw new IllegalStateException("Xaero WorldMapSession is not initialized");
+			Object processor = invoke(getMapProcessor, session);
+			if (processor == null || !isSnapshotDimensionCurrent(dimension, processor, minecraft)) return List.of();
+			Object mapWorld = invoke(getMapWorld, processor);
+			Object currentDimensionId = mapWorld == null ? null : invoke(getCurrentMapDimensionId, mapWorld);
+			// Xaero 1.25.1 getCurrentDimension() dereferences a null dimension id
+			// during the short join transition. Resolve through the id only when ready.
+			Object mapDimension = currentDimensionId == null ? null
+					: invoke(getMapDimension, mapWorld, currentDimensionId);
+			Object detected = mapDimension == null ? null : invoke(getDetectedRegions, mapDimension);
+			java.util.Set<LocalRegion> regions = new java.util.HashSet<>();
+			if (detected instanceof Map<?, ?> outer) {
+				for (Object row : outer.values()) {
+					if (!(row instanceof Map<?, ?> inner)) continue;
+					for (Object detection : inner.values()) {
+						if (detection == null) continue;
+						regions.add(new LocalRegion(((Number) invoke(getDetectedRegionX, detection)).intValue(),
+								((Number) invoke(getDetectedRegionZ, detection)).intValue()));
+					}
+				}
+			}
+			if (regions.isEmpty()) {
+				Path mainFolder;
+				String multiworld;
+				if (mapDimension != null) {
+					mainFolder = (Path) invoke(getMainFolderPath, mapDimension);
+					multiworld = (String) invoke(getCurrentMultiworld, mapDimension);
+				} else {
+					Object saveLoad = invoke(getMapSaveLoad, processor);
+					String mainId = mapWorld == null ? (String) invoke(getCurrentWorldId, processor)
+							: (String) invoke(getMapWorldMainId, mapWorld);
+					String dimensionFolder = (String) invoke(getDimensionName, processor, minecraft.level.dimension());
+					mainFolder = (Path) invoke(getMainFolder, saveLoad, mainId, dimensionFolder);
+					multiworld = mapWorld == null ? null : (String) invoke(getMapWorldCurrentMultiworld, mapWorld);
+				}
+				if ((multiworld == null || multiworld.isBlank()) && mapWorld != null)
+					multiworld = (String) invoke(getMapWorldCurrentMultiworld, mapWorld);
+				Path regionFolder = xaeroRegionFolderCandidates(mainFolder, multiworld).stream()
+						.filter(Files::isDirectory).findFirst().orElse(null);
+				if (regionFolder == null && (multiworld == null || multiworld.isBlank()))
+					regionFolder = uniqueXaeroMultiworldFolder(mainFolder).orElse(null);
+				if (regionFolder != null) {
+					try (java.util.stream.Stream<Path> files = Files.list(regionFolder)) {
+						files.filter(Files::isRegularFile)
+								.map(path -> regionFromFileName(path.getFileName().toString()))
+								.flatMap(Optional::stream).forEach(regions::add);
+					} catch (java.io.IOException exception) {
+						XaeroMapsync_r.LOGGER.warn(
+								"map_sync event=client_archive_discovery_failed dimension={} folder={}",
+								dimension, regionFolder, exception);
+					}
+					if (!regions.isEmpty()) XaeroMapsync_r.LOGGER.info(
+							"map_sync event=client_archive_discovered dimension={} regions={} source=current_xaero_folder folder={}",
+							dimension, regions.size(), regionFolder);
+				} else {
+					XaeroMapsync_r.LOGGER.debug(
+							"map_sync event=client_archive_folder_missing dimension={} main_folder={} multiworld={} candidates={}",
+							dimension, mainFolder, multiworld, xaeroRegionFolderCandidates(mainFolder, multiworld));
+				}
+			}
+			return regions.stream().sorted(java.util.Comparator.comparingInt(LocalRegion::regionX)
+					.thenComparingInt(LocalRegion::regionZ)).toList();
+		}
+
+		@Override
+		public boolean prepareLocalRegion(String dimension, LocalRegion localRegion) throws ReflectiveOperationException {
+			Minecraft minecraft = Minecraft.getInstance();
+			if (!minecraft.isSameThread() || !isSnapshotDimensionCurrent(dimension, null, minecraft)) return false;
+			Object session = invoke(currentSession, null);
+			if (session == null) throw new IllegalStateException("Xaero WorldMapSession is not initialized");
+			Object processor = invoke(getMapProcessor, session);
+			if (processor == null || !isSnapshotDimensionCurrent(dimension, processor, minecraft)) return false;
+			Object saveLoad = invoke(getMapSaveLoad, processor);
+			Object region = invoke(getMapRegion, processor, localRegion.regionX(), localRegion.regionZ(), false);
+			if (region == null) region = invoke(getMapRegion, processor, localRegion.regionX(), localRegion.regionZ(), true);
+			if (region == null) return false;
+			Object writerSync = writerThreadPauseSyncField.get(region);
+			synchronized (writerSync) {
+				synchronized (region) {
+					byte loadState = ((Number) invoke(getRegionLoadState, region)).byteValue();
+					if (loadState == 2) return true;
+					boolean reloadRequested = (Boolean) invoke(reloadHasBeenRequested, region);
+					boolean recacheRequested = (Boolean) invoke(recacheHasBeenRequested, region);
+					Object toLoad = toLoadField.get(saveLoad);
+					boolean queuedForLoad;
+					synchronized (toLoad) {
+						queuedForLoad = ((List<?>) toLoad).contains(region);
+					}
+					if (shouldRequestRegionLoad(loadState, reloadRequested, queuedForLoad, recacheRequested)) {
+						invoke(setBeingWritten, region, true);
+						invoke(requestLoad, saveLoad, region, "shared map archive scan");
+						XaeroMapsync_r.LOGGER.debug("Requested Xaero archive region load dimension={} region={} {} state={}",
+								dimension, localRegion.regionX(), localRegion.regionZ(), loadState);
+					}
+					return false;
+				}
+			}
 		}
 
 		private MapTile localTileAfterLoading(String dimension, int chunkX, int chunkZ, Object processor,
@@ -538,7 +762,13 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					minecraft.level.dimension().location().toString())) {
 				return false;
 			}
-			return processor == null || isCurrentDimension(dimension, (String) invoke(getCurrentDimension, processor));
+			if (processor == null) return true;
+			Object mapWorld = invoke(getMapWorld, processor);
+			if (mapWorld == null) return true;
+			Object xaeroDimensionId = invoke(getCurrentMapDimensionId, mapWorld);
+			// Xaero 1.25.1's MapProcessor#getCurrentDimension() is a literal
+			// "placeholder" stub. ResourceKey is the actual session identity.
+			return xaeroDimensionId == null || xaeroDimensionId.equals(minecraft.level.dimension());
 		}
 
 		private boolean hasRenderableTileData(Object xaeroTile) throws ReflectiveOperationException {
@@ -580,7 +810,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					Object biome = invoke(getBlockBiome, block);
 					ResourceLocation biomeId = biome == null ? null
 							: (ResourceLocation) invoke(getBiomeIdentifier, biome, biomeRegistry);
-					if (state == null || biomeId == null) {
+					if (state == null || biome == null) {
 						throw new IllegalStateException("Xaero map block registry data is not loaded yet");
 					}
 					baseStateIds[index] = Block.getId(state);
@@ -741,7 +971,7 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 					BlockState state = Block.stateById(stateIds[index]);
 					ResourceLocation biomeId = new ResourceLocation(biomeKeys[index]);
 					Biome biome = biomeRegistry.get(biomeId);
-					if (state == null || biomeId == null) {
+					if (state == null || biome == null) {
 						throw new IllegalArgumentException("Invalid surface registry ID at " + localX + "," + localZ);
 					}
 					int light = Byte.toUnsignedInt(lights[index]);

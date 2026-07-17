@@ -24,6 +24,7 @@ import cn.net.rms.xaeromapsync_r.server.activity.RegionKey;
 public final class MapTaskScheduler {
 	private static final double EWMA_ALPHA = 0.1D;
 	private static final int SAMPLE_WINDOW = 1200;
+	private static final long INITIAL_MAP_WORK_BUDGET_NANOS = 1_000_000L;
 	private final DirtyChunkStore dirtyChunks;
 	private final MapTileIndexStore mapTiles;
 	private final MapTileDataStore tileData;
@@ -57,7 +58,8 @@ public final class MapTaskScheduler {
 
 	private void endTick(MinecraftServer server) {
 		long elapsedBeforeMapWork = System.nanoTime() - tickStartedNanos;
-		if (paused || SharedMapConfig.highLoadPause() && averageMspt >= SharedMapConfig.highLoadMsptThreshold()) {
+		if (!shouldRunAutomaticRendering(SharedMapConfig.serverMapRenderingEnabled(), paused,
+				SharedMapConfig.highLoadPause(), averageMspt, SharedMapConfig.highLoadMsptThreshold())) {
 			lastMapWorkNanos = 0L;
 			lastTaskMillis = 0.0D;
 			recordCompletedTick(elapsedBeforeMapWork);
@@ -105,11 +107,17 @@ public final class MapTaskScheduler {
 		return Math.max(0, Math.min(configuredLimit, safetyLimit));
 	}
 
+	static boolean shouldRunAutomaticRendering(boolean enabled, boolean paused,
+			boolean pauseUnderHighLoad, double averageMspt, int highLoadMsptThreshold) {
+		return enabled && !paused && (!pauseUnderHighLoad || averageMspt < highLoadMsptThreshold);
+	}
+
 	static long adaptiveMapWorkBudgetNanos(long currentTickElapsedNanos, long previousTickNanos,
 			long previousMapWorkNanos, long targetTickNanos, long configuredBudgetNanos) {
 		long currentRemaining = remainingNanos(targetTickNanos, currentTickElapsedNanos);
 		long configured = Math.max(0L, configuredBudgetNanos);
-		if (previousTickNanos <= 0L) return Math.min(configured, currentRemaining);
+		if (previousTickNanos <= 0L)
+			return Math.min(INITIAL_MAP_WORK_BUDGET_NANOS, Math.min(configured, currentRemaining));
 		long previousBaseWork = Math.max(0L, previousTickNanos - Math.max(0L, previousMapWorkNanos));
 		long previousRemaining = remainingNanos(targetTickNanos, previousBaseWork);
 		return Math.min(configured, Math.min(currentRemaining, previousRemaining));
@@ -189,12 +197,9 @@ public final class MapTaskScheduler {
 			return;
 		}
 		if (previous == null || previous.revision() != entry.revision()) {
-			cn.net.rms.xaeromapsync_r.map.MapPatchKey patchKey =
-					cn.net.rms.xaeromapsync_r.map.MapPatchKey.fromChunk(tile.dimension(), tile.chunkX(), tile.chunkZ());
-			SharedMapServer.patches().manifest(patchKey).ifPresent(manifest -> XaeroMapsync_r.LOGGER.info(
-					"map_sync event=patch_published patch_id={} epoch={} revision={} patch_hash={} tiles={}",
-					manifest.key().stableId(), manifest.epoch(), manifest.revision(),
-					Long.toUnsignedString(manifest.contentHash()), manifest.tiles().size()));
+			XaeroMapsync_r.LOGGER.debug(
+					"map_sync event=tile_coalesce_queued dimension={} chunk_x={} chunk_z={} revision={} window_ms={}",
+					tile.dimension(), tile.chunkX(), tile.chunkZ(), entry.revision(), 2_000);
 		}
 	}
 

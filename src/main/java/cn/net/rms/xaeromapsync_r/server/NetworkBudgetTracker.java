@@ -9,7 +9,9 @@ public final class NetworkBudgetTracker {
 	private static final int DEFAULT_BYTES_PER_TICK = 32768;
 	private static final int DEFAULT_GLOBAL_BYTES_PER_TICK = 262144;
 	private static final int SAMPLE_WINDOW = 1200;
+	private static final int LOW_PRIORITY_PERCENT = 50;
 	private final Map<UUID, Integer> spentByPlayer = new ConcurrentHashMap<>();
+	private final Map<UUID, Integer> lastCompletedByPlayer = new ConcurrentHashMap<>();
 	private final int[] bytesPerTickSamples = new int[SAMPLE_WINDOW];
 	private volatile int bytesPerPlayerPerTick = DEFAULT_BYTES_PER_TICK;
 	private volatile int globalBytesPerTick = DEFAULT_GLOBAL_BYTES_PER_TICK;
@@ -38,8 +40,35 @@ public final class NetworkBudgetTracker {
 		return true;
 	}
 
+	/** Keeps deferred hole-fill traffic below half of both the per-player and global budgets. */
+	public synchronized boolean trySpendLowPriority(UUID playerId, int bytes) {
+		if (playerId == null) throw new IllegalArgumentException("Player id is required");
+		if (bytes < 0) throw new IllegalArgumentException("Network bytes must not be negative");
+		int currentPlayer = spentByPlayer.getOrDefault(playerId, 0);
+		if (!belowLowWatermark(lastCompletedByPlayer.getOrDefault(playerId, 0), lastCompletedTickBytes,
+				currentPlayer, spentGlobal, bytes, bytesPerPlayerPerTick, globalBytesPerTick)) {
+			return false;
+		}
+		spentByPlayer.put(playerId, currentPlayer + bytes);
+		spentGlobal += bytes;
+		totalBytes += bytes;
+		return true;
+	}
+
+	static boolean belowLowWatermark(int lastPlayer, int lastGlobal, int currentPlayer, int currentGlobal,
+			int bytes, int playerBudget, int globalBudget) {
+		long playerLowWatermark = (long) playerBudget * LOW_PRIORITY_PERCENT / 100;
+		long globalLowWatermark = (long) globalBudget * LOW_PRIORITY_PERCENT / 100;
+		return lastPlayer <= playerLowWatermark && lastGlobal <= globalLowWatermark
+				&& currentPlayer < playerLowWatermark && currentGlobal < globalLowWatermark
+				&& (long) currentPlayer + bytes <= playerBudget
+				&& (long) currentGlobal + bytes <= globalBudget;
+	}
+
 	private synchronized void beginTick() {
 		lastCompletedTickBytes = spentGlobal;
+		lastCompletedByPlayer.clear();
+		lastCompletedByPlayer.putAll(spentByPlayer);
 		bytesPerTickSamples[sampleCursor] = spentGlobal;
 		sampleCursor = (sampleCursor + 1) % SAMPLE_WINDOW;
 		sampleCount = Math.min(SAMPLE_WINDOW, sampleCount + 1);

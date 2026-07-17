@@ -25,6 +25,7 @@ import org.objectweb.asm.Opcodes;
 final class ReflectiveXaeroMapAdapterTest {
 	private static final Path XAERO_WORLD_MAP_JAR = Path.of(
 			"xaeromap-origin", "XaerosWorldMap_1.25.1_Fabric_1.17.1.jar");
+	@org.junit.jupiter.api.io.TempDir Path tempDirectory;
 
 	@Test
 	void versionGateOnlyAcceptsXaeroWorldMap1251() {
@@ -60,6 +61,45 @@ final class ReflectiveXaeroMapAdapterTest {
 	void inactiveDimensionIsNotAnAdapterFailure() {
 		assertFalse(ReflectiveXaeroMapAdapter.isCurrentDimension("minecraft:the_nether", "minecraft:overworld"));
 		assertTrue(ReflectiveXaeroMapAdapter.isCurrentDimension("minecraft:overworld", "minecraft:overworld"));
+	}
+
+	@Test
+	void parsesOnlyXaeroRegionZipNamesForArchiveFallback() {
+		assertEquals(new XaeroMapAdapter.LocalRegion(-12, 34),
+				ReflectiveXaeroMapAdapter.regionFromFileName("-12_34.zip").orElseThrow());
+		assertTrue(ReflectiveXaeroMapAdapter.regionFromFileName("cache_1_2.zip").isEmpty());
+		assertTrue(ReflectiveXaeroMapAdapter.regionFromFileName("1_2.zip.tmp").isEmpty());
+		assertTrue(ReflectiveXaeroMapAdapter.regionFromFileName(null).isEmpty());
+	}
+
+	@Test
+	void archiveFolderCandidatesDoNotDuplicateXaeroMultiworldPrefix() {
+		Path root = Path.of("XaeroWorldMap", "server", "null");
+		assertEquals(List.of(root.resolve("mw$default")),
+				ReflectiveXaeroMapAdapter.xaeroRegionFolderCandidates(root, "mw$default"));
+		assertEquals(List.of(root.resolve("default"), root.resolve("mw$default")),
+				ReflectiveXaeroMapAdapter.xaeroRegionFolderCandidates(root, "default"));
+		assertTrue(ReflectiveXaeroMapAdapter.xaeroRegionFolderCandidates(root, null).isEmpty());
+	}
+
+	@Test
+	void archiveFallbackUsesOnlyAnUnambiguousMultiworldFolder() throws IOException {
+		Path mainFolder = tempDirectory.resolve("current-dimension");
+		Path current = Files.createDirectories(mainFolder.resolve("mw$default"));
+		assertEquals(current, ReflectiveXaeroMapAdapter.uniqueXaeroMultiworldFolder(mainFolder).orElseThrow());
+
+		Files.createDirectories(mainFolder.resolve("mw$alternate"));
+		assertTrue(ReflectiveXaeroMapAdapter.uniqueXaeroMultiworldFolder(mainFolder).isEmpty());
+	}
+
+	@Test
+	void onlyCurrentlyLoadedChunksAreLocallyOwned() {
+		assertEquals(XaeroMapAdapter.LocalTileState.REMOTE,
+				ReflectiveXaeroMapAdapter.localOwnership(false, true));
+		assertEquals(XaeroMapAdapter.LocalTileState.GENERATING,
+				ReflectiveXaeroMapAdapter.localOwnership(true, false));
+		assertEquals(XaeroMapAdapter.LocalTileState.READY,
+				ReflectiveXaeroMapAdapter.localOwnership(true, true));
 	}
 
 	@Test
@@ -109,6 +149,57 @@ final class ReflectiveXaeroMapAdapterTest {
 		assertEquals("()Z", tile.methodDescriptor("wasWrittenOnce"));
 		ClassSignature core = readClassSignature("xaero/map/core/XaeroWorldMapCore.class");
 		assertEquals("Ljava/lang/reflect/Field;", core.fieldDescriptor("chunkCleanField"));
+		assertEquals("(II)V", core.methodDescriptor("chunkUpdateCallback"));
+		ClassSignature mapWorld = readClassSignature("xaero/map/world/MapWorld.class");
+		ClassSignature mapDimension = readClassSignature("xaero/map/world/MapDimension.class");
+		ClassSignature detection = readClassSignature("xaero/map/file/RegionDetection.class");
+		assertEquals("()Lxaero/map/world/MapWorld;", signature.methodDescriptor("getMapWorld"));
+		assertEquals("()Lxaero/map/world/MapDimension;", mapWorld.methodDescriptor("getCurrentDimension"));
+		assertEquals("()Lnet/minecraft/class_5321;", mapWorld.methodDescriptor("getCurrentDimensionId"));
+		assertEquals("(Lnet/minecraft/class_5321;)Lxaero/map/world/MapDimension;",
+				mapWorld.methodDescriptor("getDimension"));
+		assertEquals("()Ljava/lang/String;", mapWorld.methodDescriptor("getCurrentMultiworld"));
+		assertEquals("()Ljava/lang/String;", mapWorld.methodDescriptor("getMainId"));
+		assertEquals("(Lnet/minecraft/class_5321;)Ljava/lang/String;", signature.methodDescriptor("getDimensionName"));
+		assertEquals("(Ljava/lang/String;Ljava/lang/String;)Ljava/nio/file/Path;",
+				saveLoad.methodDescriptor("getMainFolder"));
+		assertEquals("()Ljava/lang/String;", signature.methodDescriptor("getCurrentWorldId"));
+		assertEquals("()Ljava/util/Hashtable;", mapDimension.methodDescriptor("getDetectedRegions"));
+		assertEquals("()Ljava/nio/file/Path;", mapDimension.methodDescriptor("getMainFolderPath"));
+		assertEquals("()Ljava/lang/String;", mapDimension.methodDescriptor("getCurrentMultiworld"));
+		assertEquals("()I", detection.methodDescriptor("getRegionX"));
+		assertEquals("()I", detection.methodDescriptor("getRegionZ"));
+	}
+
+	@Test
+	void archiveRegionOperationsAreDelegatedToRuntime() {
+		XaeroMapAdapter.LocalRegion region = new XaeroMapAdapter.LocalRegion(-2, 3);
+		ReflectiveXaeroMapAdapter.XaeroRuntime runtime = new ReflectiveXaeroMapAdapter.XaeroRuntime() {
+			@Override public void apply(MapTile ignored) { }
+			@Override public List<XaeroMapAdapter.LocalRegion> knownLocalRegions(String dimension) {
+				return List.of(region);
+			}
+			@Override public boolean prepareLocalRegion(String dimension, XaeroMapAdapter.LocalRegion requested) {
+				return requested.equals(region);
+			}
+		};
+		ReflectiveXaeroMapAdapter adapter = new ReflectiveXaeroMapAdapter(runtime);
+		assertEquals(List.of(region), adapter.knownLocalRegions("minecraft:overworld"));
+		assertTrue(adapter.prepareLocalRegion("minecraft:overworld", region));
+	}
+
+	@Test
+	void transientArchiveDiscoveryFailureDoesNotDisableLiveMapAdapter() {
+		ReflectiveXaeroMapAdapter.XaeroRuntime runtime = new ReflectiveXaeroMapAdapter.XaeroRuntime() {
+			@Override public void apply(MapTile ignored) { }
+			@Override public List<XaeroMapAdapter.LocalRegion> knownLocalRegions(String dimension) {
+				throw new NullPointerException("Xaero dimension id is joining");
+			}
+		};
+		ReflectiveXaeroMapAdapter adapter = new ReflectiveXaeroMapAdapter(runtime);
+
+		assertTrue(adapter.knownLocalRegions("minecraft:overworld").isEmpty());
+		assertTrue(adapter.isAvailable());
 	}
 
 	@Test

@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import cn.net.rms.xaeromapsync_r.map.MapTile;
 import cn.net.rms.xaeromapsync_r.map.MapTileHasher;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
+import cn.net.rms.xaeromapsync_r.map.MapPatchKey;
+import cn.net.rms.xaeromapsync_r.map.MapPatchManifest;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,6 +17,19 @@ import org.junit.jupiter.api.io.TempDir;
 
 final class ClientMapTileCacheTest {
 	@TempDir Path tempDirectory;
+
+	@Test
+	void metadataCacheEvictsLeastRecentlyUsedEntryAtCapacity() {
+		java.util.Map<Integer, Integer> cache = ClientMapTileCache.boundedAccessMap(2);
+		cache.put(1, 1);
+		cache.put(2, 2);
+		assertEquals(1, cache.get(1));
+		cache.put(3, 3);
+
+		assertTrue(cache.containsKey(1));
+		assertFalse(cache.containsKey(2));
+		assertTrue(cache.containsKey(3));
+	}
 
 	@Test
 	void sessionResetInvalidatesAppliedRevisions() {
@@ -89,6 +104,54 @@ final class ClientMapTileCacheTest {
 
 		assertTrue(cache.findCached(entry).get().isEmpty());
 		cache.stop();
+	}
+
+	@Test
+	void appliedTileRevisionsSurviveAdaptivePatchReshaping() {
+		ClientMapTileCache cache = new ClientMapTileCache();
+		MapPatchKey key = MapPatchKey.square("minecraft:overworld", 4, 8, 2);
+		List<MapPatchManifest.TileReference> references = new ArrayList<>();
+		for (int x = 4; x < 6; x++) for (int z = 8; z < 10; z++) {
+			MapTile tile = tile(key.dimension(), x, z);
+			cache.markApplied(tile, 7L);
+			references.add(new MapPatchManifest.TileReference(x, z, 7L, tile.contentHash()));
+		}
+		MapPatchManifest reshaped = new MapPatchManifest(key, 1L, 7L, references);
+		assertTrue(cache.hasApplied(reshaped));
+
+		MapPatchManifest newer = new MapPatchManifest(key, 2L, 8L, references.stream()
+				.map(reference -> reference.chunkX() == 5 && reference.chunkZ() == 9
+						? new MapPatchManifest.TileReference(5, 9, 8L, reference.contentHash()) : reference)
+				.toList());
+		assertFalse(cache.hasApplied(newer));
+	}
+
+	@Test
+	void burstWaveCacheWritesDrainWithoutDroppingBodies() throws Exception {
+		Path cachePath = tempDirectory.resolve("burst-wave-tiles");
+		ClientMapTileCache cache = new ClientMapTileCache();
+		cache.start(cachePath);
+		MapTile first = null;
+		MapTile last = null;
+		for (int index = 0; index < 1_100; index++) {
+			MapTile current = tile("minecraft:overworld", index, -index, index & 3);
+			if (first == null) first = current;
+			last = current;
+			cache.cache(current, index + 1L);
+		}
+		long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(20L);
+		while (cache.pendingWriteCount() > 0 && System.nanoTime() < deadline) Thread.sleep(10L);
+		assertEquals(0, cache.pendingWriteCount());
+		cache.stop();
+
+		ClientMapTileCache restarted = new ClientMapTileCache();
+		restarted.start(cachePath);
+		for (MapTile expected : List.of(first, last)) {
+			MapTileIndexEntry entry = new MapTileIndexEntry(expected.dimension(), expected.chunkX(), expected.chunkZ(),
+					expected.contentHash(), expected == first ? 1L : 1_100L, 0L);
+			assertEquals(expected.contentHash(), restarted.findCached(entry).get().orElseThrow().contentHash());
+		}
+		restarted.stop();
 	}
 
 	private static MapTile tile(String dimension, int x, int z) {

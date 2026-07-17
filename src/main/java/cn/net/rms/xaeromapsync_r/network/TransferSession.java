@@ -96,6 +96,15 @@ public final class TransferSession {
 		return unacknowledgedParts();
 	}
 
+	/** Sending a new part is transfer progress even before its acknowledgement arrives. */
+	public void markPartSent(long nowMillis) {
+		if (status != Status.ACTIVE) {
+			throw new IllegalStateException("Transfer session is not active: " + status);
+		}
+		validateClock(nowMillis);
+		lastProgressMillis = nowMillis;
+	}
+
 	public List<TransferPartPayload> unacknowledgedParts() {
 		if (status == Status.COMPLETED) {
 			return List.of();

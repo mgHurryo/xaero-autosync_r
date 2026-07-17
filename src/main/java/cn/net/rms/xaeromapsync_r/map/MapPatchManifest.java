@@ -6,7 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** Immutable declaration of every tile required for one atomic visual patch. */
+/** Immutable declaration of the available tiles in one atomic transaction grid. */
 public final class MapPatchManifest {
 	private final MapPatchKey key;
 	private final long epoch;
@@ -16,10 +16,10 @@ public final class MapPatchManifest {
 
 	public MapPatchManifest(MapPatchKey key, long epoch, long revision, List<TileReference> tiles) {
 		if (key == null) throw new IllegalArgumentException("Patch key is required");
-		if (epoch < 0L || revision < 0L) throw new IllegalArgumentException("Patch epoch and revision must be non-negative");
+		if (revision < 0L) throw new IllegalArgumentException("Patch revision must be non-negative");
 		List<TileReference> ordered = new ArrayList<>(tiles == null ? List.of() : tiles);
 		ordered.sort(Comparator.comparingInt(TileReference::chunkX).thenComparingInt(TileReference::chunkZ));
-		validateComplete(key, ordered);
+		validateSquare(key, ordered);
 		this.key = key;
 		this.epoch = epoch;
 		this.revision = revision;
@@ -43,9 +43,9 @@ public final class MapPatchManifest {
 	public long contentHash() { return contentHash; }
 	public List<TileReference> tiles() { return tiles; }
 
-	private static void validateComplete(MapPatchKey key, List<TileReference> tiles) {
-		if (tiles.size() != MapPatchKey.TILE_COUNT) {
-			throw new IllegalArgumentException("Atomic patch requires exactly " + MapPatchKey.TILE_COUNT + " tiles");
+	private static void validateSquare(MapPatchKey key, List<TileReference> tiles) {
+		if (tiles.size() != key.tileCount()) {
+			throw new IllegalArgumentException("Atomic square patch requires exactly " + key.tileCount() + " tiles");
 		}
 		Set<Long> coordinates = new HashSet<>();
 		for (TileReference tile : tiles) {
@@ -55,12 +55,9 @@ public final class MapPatchManifest {
 			long coordinate = (((long) tile.chunkX()) << 32) ^ (tile.chunkZ() & 0xffffffffL);
 			if (!coordinates.add(coordinate)) throw new IllegalArgumentException("Patch contains a duplicate tile");
 		}
-		for (int dx = 0; dx < MapPatchKey.CHUNKS_PER_SIDE; dx++) {
-			for (int dz = 0; dz < MapPatchKey.CHUNKS_PER_SIDE; dz++) {
-				long expected = (((long) (key.minChunkX() + dx)) << 32)
-						^ ((key.minChunkZ() + dz) & 0xffffffffL);
-				if (!coordinates.contains(expected)) throw new IllegalArgumentException("Patch tile grid is incomplete");
-			}
+		for (int dx = 0; dx < key.sideLength(); dx++) for (int dz = 0; dz < key.sideLength(); dz++) {
+			long expected = (((long) (key.minChunkX() + dx)) << 32) ^ ((key.minChunkZ() + dz) & 0xffffffffL);
+			if (!coordinates.contains(expected)) throw new IllegalArgumentException("Square patch tile grid is incomplete");
 		}
 	}
 

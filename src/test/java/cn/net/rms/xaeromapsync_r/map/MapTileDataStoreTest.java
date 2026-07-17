@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.zip.DeflaterOutputStream;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -97,6 +98,8 @@ public final class MapTileDataStoreTest {
 		assertTrue(completed.await(5, TimeUnit.SECONDS));
 		assertEquals(latest.contentHash(), store.find(latest.dimension(), latest.chunkX(), latest.chunkZ())
 				.orElseThrow().contentHash());
+		assertEquals(first.contentHash(), store.find(first.dimension(), first.chunkX(), first.chunkZ(),
+				first.contentHash()).orElseThrow().contentHash());
 		store.stop();
 	}
 
@@ -121,6 +124,8 @@ public final class MapTileDataStoreTest {
 		assertTrue(store.commitStaged(staged.get()));
 		assertEquals(latest.contentHash(), store.find(latest.dimension(), latest.chunkX(), latest.chunkZ())
 				.orElseThrow().contentHash());
+		assertEquals(current.contentHash(), store.find(current.dimension(), current.chunkX(), current.chunkZ(),
+				current.contentHash()).orElseThrow().contentHash());
 		store.stop();
 	}
 
@@ -181,6 +186,22 @@ public final class MapTileDataStoreTest {
 
 		assertEquals(first.contentHash(), index.find("minecraft:overworld", -2, 7).orElseThrow().contentHash());
 		assertEquals(second.contentHash(), index.find("minecraft:the_nether", 4, -9).orElseThrow().contentHash());
+	}
+
+	@Test
+	void recoveryRemovesOrphanedStagedTileFiles() throws Exception {
+		String dimension = "minecraft:overworld";
+		Path dimensionPath = tempDir.resolve(Base64.getUrlEncoder().withoutPadding()
+				.encodeToString(dimension.getBytes(StandardCharsets.UTF_8)));
+		Files.createDirectories(dimensionPath);
+		Path orphanedStage = dimensionPath.resolve("4_-7.tile.stage-" + UUID.randomUUID());
+		Files.writeString(orphanedStage, "incomplete staged body");
+		MapTileDataStore store = new MapTileDataStore();
+		store.start(tempDir);
+
+		assertEquals(0, store.recoverIndex(new MapTileIndexStore()));
+		assertFalse(Files.exists(orphanedStage));
+		store.stop();
 	}
 
 	@Test

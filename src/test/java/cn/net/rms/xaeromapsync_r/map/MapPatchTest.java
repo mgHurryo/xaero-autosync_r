@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 
 class MapPatchTest {
 	@Test
-	void acceptsOnlyCompleteAlignedPatch() {
+	void acceptsCompleteAlignedPatch() {
 		MapPatchKey key = MapPatchKey.fromChunk("minecraft:overworld", -1, 5);
 		List<MapPatchManifest.TileReference> references = references(key);
 		MapPatchManifest manifest = new MapPatchManifest(key, 7L, 19L, references);
@@ -22,10 +22,12 @@ class MapPatchTest {
 	}
 
 	@Test
-	void rejectsPartialOrMismatchedPatch() {
+	void acceptsAdaptiveSquareAndRejectsMismatchedBody() {
 		MapPatchKey key = new MapPatchKey("minecraft:overworld", 0, 0);
-		List<MapPatchManifest.TileReference> partial = references(key).subList(0, 15);
-		assertThrows(IllegalArgumentException.class, () -> new MapPatchManifest(key, 1L, 1L, partial));
+		MapPatchKey adaptive = MapPatchKey.square("minecraft:overworld", 0, 0, 3);
+		MapPatchManifest adaptiveManifest = new MapPatchManifest(adaptive, 1L, 1L, references(adaptive));
+		MapPatch adaptivePatch = new MapPatch(adaptiveManifest, tiles(adaptive));
+		assertEquals(9, adaptivePatch.tiles().size());
 
 		MapPatchManifest manifest = new MapPatchManifest(key, 1L, 1L, references(key));
 		List<MapTile> mismatched = new ArrayList<>(tiles(key));
@@ -34,18 +36,42 @@ class MapPatchTest {
 	}
 
 	@Test
+	void acceptsFullRegionAndRejectsInvalidSquareBounds() {
+		MapPatchKey fullRegion = MapPatchKey.square("minecraft:overworld", -32, 64, 32);
+		assertEquals(1_024, fullRegion.tileCount());
+		assertEquals(-1, fullRegion.xaeroRegionX());
+		assertEquals(2, fullRegion.xaeroRegionZ());
+		assertThrows(IllegalArgumentException.class,
+				() -> MapPatchKey.square("minecraft:overworld", 0, 0, 33));
+		assertThrows(IllegalArgumentException.class,
+				() -> MapPatchKey.square("minecraft:overworld", 31, 0, 2));
+	}
+
+	@Test
+	void rejectsEmptyDuplicateAndOutOfRangeSquarePatch() {
+		MapPatchKey key = new MapPatchKey("minecraft:overworld", 0, 0);
+		assertThrows(IllegalArgumentException.class, () -> new MapPatchManifest(key, 1L, 1L, List.of()));
+		MapPatchManifest.TileReference first = references(key).get(0);
+		assertThrows(IllegalArgumentException.class,
+				() -> new MapPatchManifest(key, 1L, 1L, List.of(first, first)));
+		assertThrows(IllegalArgumentException.class, () -> new MapPatchManifest(key, 1L, 1L,
+				List.of(new MapPatchManifest.TileReference(4, 0, 1L, 1L))));
+	}
+
+	@Test
 	void contentHashDoesNotChangeForUnrelatedCatalogEpoch() {
 		MapPatchKey key = new MapPatchKey("minecraft:overworld", 0, 0);
-		MapPatchManifest first = new MapPatchManifest(key, 7L, 19L, references(key));
+		MapPatchManifest first = new MapPatchManifest(key, Long.MIN_VALUE, 19L, references(key));
 		MapPatchManifest laterCatalog = new MapPatchManifest(key, 8L, 19L, references(key));
 
+		assertEquals(Long.MIN_VALUE, first.epoch());
 		assertEquals(first.contentHash(), laterCatalog.contentHash());
 	}
 
 	private static List<MapPatchManifest.TileReference> references(MapPatchKey key) {
 		List<MapPatchManifest.TileReference> result = new ArrayList<>();
-		for (int dx = 0; dx < 4; dx++) for (int dz = 0; dz < 4; dz++) {
-			long hash = dx * 4L + dz + 1L;
+		for (int dx = 0; dx < key.sideLength(); dx++) for (int dz = 0; dz < key.sideLength(); dz++) {
+			long hash = dx * (long) key.sideLength() + dz + 1L;
 			result.add(new MapPatchManifest.TileReference(key.minChunkX() + dx, key.minChunkZ() + dz, hash, hash));
 		}
 		return result;
@@ -53,8 +79,8 @@ class MapPatchTest {
 
 	private static List<MapTile> tiles(MapPatchKey key) {
 		List<MapTile> result = new ArrayList<>();
-		for (int dx = 0; dx < 4; dx++) for (int dz = 0; dz < 4; dz++) {
-			long hash = dx * 4L + dz + 1L;
+		for (int dx = 0; dx < key.sideLength(); dx++) for (int dz = 0; dz < key.sideLength(); dz++) {
+			long hash = dx * (long) key.sideLength() + dz + 1L;
 			result.add(tile(key.minChunkX() + dx, key.minChunkZ() + dz, hash));
 		}
 		return result;

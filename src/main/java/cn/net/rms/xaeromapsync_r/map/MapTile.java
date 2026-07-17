@@ -7,7 +7,7 @@ import java.util.List;
 import java.nio.charset.StandardCharsets;
 
 public final class MapTile {
-	public static final int FORMAT_VERSION = 5;
+	public static final int FORMAT_VERSION = 6;
 	public static final int MAX_OVERLAYS_PER_COLUMN = 10;
 	public static final int MAX_BIOME_KEY_BYTES = 128;
 

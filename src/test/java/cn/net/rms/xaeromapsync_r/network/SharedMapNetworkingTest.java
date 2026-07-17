@@ -19,4 +19,10 @@ final class SharedMapNetworkingTest {
 		assertTrue(SharedMapNetworking.hasMatchingTileBody(entry, tile, tile.contentHash()));
 		assertFalse(SharedMapNetworking.hasMatchingTileBody(entry, tile, tile.contentHash() + 1L));
 	}
+
+	@Test
+	void localTileUploadsAreAcceptedOnlyNearServerViewDistance() {
+		assertTrue(SharedMapNetworking.localTileUploadDistanceLimit(10) <= 11);
+		assertTrue(SharedMapNetworking.localTileUploadDistanceLimit(0) >= 2);
+	}
 }

@@ -65,6 +65,9 @@ public final class SharedMapConfig {
 		return VALUES.getProperty("network.compression", SharedMapProtocolDefaults.COMPRESSION);
 	}
 
+	public static boolean mapSyncEnabled() { return booleanValue("map.sync.enabled", true); }
+	public static boolean mapSyncShadowMode() { return booleanValue("map.sync.shadow_mode", false); }
+
 	public static boolean highLoadPause() {
 		return booleanValue("tasks.high_load_pause", true);
 	}
@@ -165,6 +168,8 @@ public final class SharedMapConfig {
 		defaults.setProperty("network.max_tile_requests_per_snapshot", "256");
 		defaults.setProperty("network.bytes_per_player_per_tick", "262144");
 		defaults.setProperty("network.global_bytes_per_tick", "2097152");
+		defaults.setProperty("map.sync.enabled", "true");
+		defaults.setProperty("map.sync.shadow_mode", "false");
 		defaults.setProperty("exploration.auto_view_distance", "true");
 		defaults.setProperty("exploration.edge_chunk_margin", "1");
 		defaults.setProperty("tasks.normal_tick_budget_ms", "2");

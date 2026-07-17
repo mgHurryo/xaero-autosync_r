@@ -80,6 +80,7 @@ public final class SharedMapClient {
 	private static boolean handlingTileDataBatch;
 	private static XaeroWaypointAdapter waypointAdapter;
 	private static XaeroMapAdapter mapAdapter;
+	private static AtomicMapSyncClient atomicMapSyncClient;
 	private static int clientTicks;
 	private static int mapRootPollTicks;
 	private static int mapNodeRequestsInFlight;
@@ -107,7 +108,8 @@ public final class SharedMapClient {
 		XaeroMapsync_r.LOGGER.info("Xaero availability: {}", XaeroDetector.status().message());
 		waypointAdapter = XaeroWaypointAdapters.create();
 		mapAdapter = new ReflectiveXaeroMapAdapter();
-		TILE_DATA.start(FabricLoader.getInstance().getConfigDir().resolve("xaero-mapsync_r-client-tiles-v5"));
+		atomicMapSyncClient = new AtomicMapSyncClient(mapAdapter,
+				FabricLoader.getInstance().getConfigDir().resolve("xaero-mapsync_r-client-patches-v6"));
 		previousMapSyncEnabled = SharedMapClientConfig.get().mapSyncEnabled();
 		previousWaypointsEnabled = SharedMapClientConfig.get().publicWaypointsEnabled();
 		previousDimension = currentDimension();
@@ -120,13 +122,10 @@ public final class SharedMapClient {
 			clientTicks++;
 			SharedMapNetworking.tickClientTransfers();
 			handleConfigChanges();
-			processPendingTileApplications();
-			reportNativeLocalTiles();
+			atomicMapSyncClient.tick();
 			sanitizeWaypointsIfNeeded();
-			handleSyncWatchdog();
-			pollMapRootIfIdle();
 		});
-		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> TILE_DATA.stop());
+		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> atomicMapSyncClient.stop());
 	}
 
 	public static void handleServerHello(ServerHelloPayload hello) {
@@ -135,13 +134,13 @@ public final class SharedMapClient {
 				"Received shared map server hello accepted={} protocol={} mapFormat={} message={}",
 				hello.accepted(), hello.protocolVersion(), hello.mapFormatVersion(), hello.message());
 		if (hello.accepted()) {
-			beginMapSession();
+			atomicMapSyncClient.setConnected(SharedMapClientConfig.get().mapSyncEnabled() && mapSyncAvailable());
 			previousDimension = currentDimension();
 			XaeroMapsync_r.LOGGER.info("Shared map handshake accepted: {}", hello.message());
 			if (SharedMapClientConfig.get().publicWaypointsEnabled()) SharedMapNetworking.requestWaypointSnapshot();
-			if (SharedMapClientConfig.get().mapSyncEnabled() && mapSyncAvailable()) requestMapRoot();
 			return;
 		}
+		atomicMapSyncClient.setConnected(false);
 		XaeroMapsync_r.LOGGER.warn("Shared map handshake rejected: {}", hello.message());
 	}
 
@@ -150,7 +149,7 @@ public final class SharedMapClient {
 				"Shared map client disconnected; clearing session state waypointCount={} indexedTiles={} cachedTiles={} pendingTiles={}",
 				WAYPOINTS.activeCount(), MAP_TILES.totalCount(), TILE_DATA.totalCount(), pendingTileCount());
 		connectedToSharedMapServer = false;
-		beginMapSession();
+		atomicMapSyncClient.setConnected(false);
 		clearPendingWaypointMutations();
 		WAYPOINTS.replace(java.util.List.of());
 		waypointSanitizationPending = true;
@@ -267,6 +266,18 @@ public final class SharedMapClient {
 		pumpTileRequests();
 		XaeroMapsync_r.LOGGER.debug("Processed tile data batch size={} pendingAfter={} inFlightAfter={}",
 				payload.tiles().size(), TILE_APPLY_QUEUE.size(), tileRequestsInFlight);
+	}
+
+	public static void handlePatchManifestPage(cn.net.rms.xaeromapsync_r.network.PatchManifestPagePayload payload) {
+		atomicMapSyncClient.handleManifestPage(payload);
+	}
+
+	public static void handlePatchData(cn.net.rms.xaeromapsync_r.network.PatchDataPayload payload) {
+		atomicMapSyncClient.handlePatchData(payload);
+	}
+
+	public static void handlePatchUnavailable(cn.net.rms.xaeromapsync_r.network.PatchUnavailablePayload payload) {
+		atomicMapSyncClient.handlePatchUnavailable(payload);
 	}
 
 	private static boolean enqueuePendingTileApply(String key, MapTile tile, long revision) {
@@ -777,15 +788,13 @@ public final class SharedMapClient {
 			XaeroMapsync_r.LOGGER.info("Shared map dimension changed: {} -> {}; restarting map sync",
 					previousDimension, dimension);
 			previousDimension = dimension;
-			resetMapQueues();
-			requestMapRoot();
+			atomicMapSyncClient.setConnected(true);
 		}
 		if (mapEnabled != previousMapSyncEnabled) {
 			XaeroMapsync_r.LOGGER.info("Shared map client map sync config changed: {} -> {} connected={} available={}",
 					previousMapSyncEnabled, mapEnabled, connectedToSharedMapServer, mapSyncAvailable());
 			previousMapSyncEnabled = mapEnabled;
-			if (mapEnabled && connectedToSharedMapServer) requestMapRoot();
-			if (!mapEnabled) resetMapQueues();
+			atomicMapSyncClient.setConnected(mapEnabled && connectedToSharedMapServer);
 		}
 		if (waypointsEnabled != previousWaypointsEnabled) {
 			XaeroMapsync_r.LOGGER.info("Shared map public waypoint config changed: {} -> {} connected={}",
@@ -845,10 +854,10 @@ public final class SharedMapClient {
 	}
 
 	public static int waypointCount() { return WAYPOINTS.activeCount(); }
-	public static int tileCount() { return TILE_DATA.totalCount(); }
+	public static int tileCount() { return atomicMapSyncClient == null ? 0 : atomicMapSyncClient.appliedTileCount(); }
 	public static int indexedTileCount() { return MAP_TILES.totalCount(); }
-	public static int pendingTileCount() { return TILE_CACHE_LOOKUP_QUEUE.size() + tileCacheLookupsInFlight
-			+ TILE_REQUEST_QUEUE.size() + tileRequestsInFlight + TILE_APPLY_QUEUE.size(); }
+	public static int pendingTileCount() { return atomicMapSyncClient == null ? 0 : atomicMapSyncClient.pendingCount(); }
+	public static String mapSyncStatus() { return atomicMapSyncClient == null ? "not-initialized" : atomicMapSyncClient.status(); }
 	public static java.util.List<PublicWaypoint> waypointSnapshot() { return WAYPOINTS.snapshot(); }
 
 	public static void shareSelectedXaeroWaypoint(Screen screen, WaypointVisibility visibility) {

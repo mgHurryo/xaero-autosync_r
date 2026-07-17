@@ -7,6 +7,8 @@ import cn.net.rms.xaeromapsync_r.client.SharedMapClientConfig;
 import cn.net.rms.xaeromapsync_r.config.SharedMapConfig;
 import cn.net.rms.xaeromapsync_r.map.MapTile;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexEntry;
+import cn.net.rms.xaeromapsync_r.map.MapPatch;
+import cn.net.rms.xaeromapsync_r.map.MapPatchManifest;
 import cn.net.rms.xaeromapsync_r.server.SharedMapServer;
 import cn.net.rms.xaeromapsync_r.server.access.SharedMapActor;
 import cn.net.rms.xaeromapsync_r.server.access.SharedMapActors;
@@ -48,6 +50,9 @@ public final class SharedMapNetworking {
 	public static final net.minecraft.resources.ResourceLocation C2S_LOCAL_TILE_READY = XaeroMapsync_r.id("c2s_local_tile_ready");
 	public static final net.minecraft.resources.ResourceLocation C2S_LOCAL_TILE_DATA = XaeroMapsync_r.id("c2s_local_tile_data");
 	public static final net.minecraft.resources.ResourceLocation C2S_TRANSFER_ACK = XaeroMapsync_r.id("c2s_transfer_ack");
+	public static final net.minecraft.resources.ResourceLocation C2S_TRANSFER_NACK = XaeroMapsync_r.id("c2s_transfer_nack");
+	public static final net.minecraft.resources.ResourceLocation C2S_PATCH_MANIFEST_REQUEST = XaeroMapsync_r.id("c2s_patch_manifest_request");
+	public static final net.minecraft.resources.ResourceLocation C2S_PATCH_REQUEST = XaeroMapsync_r.id("c2s_patch_request");
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_INDEX_SNAPSHOT = XaeroMapsync_r.id("s2c_map_index_snapshot");
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_MERKLE_SNAPSHOT = XaeroMapsync_r.id("s2c_map_merkle_snapshot");
 	public static final net.minecraft.resources.ResourceLocation S2C_TILE_DATA = XaeroMapsync_r.id("s2c_tile_data");
@@ -55,6 +60,9 @@ public final class SharedMapNetworking {
 	public static final net.minecraft.resources.ResourceLocation S2C_TILE_UNAVAILABLE = XaeroMapsync_r.id("s2c_tile_unavailable");
 	public static final net.minecraft.resources.ResourceLocation S2C_MAP_NODE_RESPONSE = XaeroMapsync_r.id("s2c_map_node_response");
 	public static final net.minecraft.resources.ResourceLocation S2C_TRANSFER_PART = XaeroMapsync_r.id("s2c_transfer_part");
+	public static final net.minecraft.resources.ResourceLocation S2C_PATCH_MANIFEST_PAGE = XaeroMapsync_r.id("s2c_patch_manifest_page");
+	public static final net.minecraft.resources.ResourceLocation S2C_PATCH_DATA = XaeroMapsync_r.id("s2c_patch_data");
+	public static final net.minecraft.resources.ResourceLocation S2C_PATCH_UNAVAILABLE = XaeroMapsync_r.id("s2c_patch_unavailable");
 	public static final net.minecraft.resources.ResourceLocation S2C_WAYPOINT_SNAPSHOT = XaeroMapsync_r.id("s2c_waypoint_snapshot");
 	public static final net.minecraft.resources.ResourceLocation S2C_WAYPOINT_UPSERT = XaeroMapsync_r.id("s2c_waypoint_upsert");
 	public static final net.minecraft.resources.ResourceLocation S2C_WAYPOINT_DELETE = XaeroMapsync_r.id("s2c_waypoint_delete");
@@ -62,6 +70,8 @@ public final class SharedMapNetworking {
 	private static final int TRANSFER_TYPE_MAP_NODE_RESPONSE = 1;
 	private static final int TRANSFER_TYPE_TILE_DATA = 2;
 	private static final int TRANSFER_TYPE_TILE_DATA_BATCH = 3;
+	private static final int TRANSFER_TYPE_PATCH_MANIFEST_PAGE = 4;
+	private static final int TRANSFER_TYPE_PATCH_DATA = 5;
 	private static final int LOCAL_TILE_HINT_DISTANCE_GRACE_CHUNKS = 1;
 	private static final int TILE_BATCH_ENVELOPE_BYTES = 16;
 	private static final int TILE_BATCH_TILE_ENVELOPE_BYTES = 96;
@@ -100,51 +110,13 @@ public final class SharedMapNetworking {
 		});
 		ServerPlayNetworking.registerGlobalReceiver(C2S_WAYPOINT_SNAPSHOT_REQUEST, (server, player, handler, buffer, responseSender) ->
 				server.execute(() -> runForAcceptedClient(player, () -> refreshWaypointVisibility(player))));
-		ServerPlayNetworking.registerGlobalReceiver(C2S_MAP_ROOT_HASH, (server, player, handler, buffer, responseSender) -> {
-			MapRootHashPayload payload = MapRootHashPayload.read(buffer);
-			server.execute(() -> runForAcceptedClient(player, () -> sendMapIndexIfChanged(player, payload)));
+		ServerPlayNetworking.registerGlobalReceiver(C2S_PATCH_MANIFEST_REQUEST, (server, player, handler, buffer, responseSender) -> {
+			PatchManifestRequestPayload payload = PatchManifestRequestPayload.read(buffer);
+			server.execute(() -> runForAcceptedClient(player, () -> sendPatchManifestPage(player, payload)));
 		});
-		ServerPlayNetworking.registerGlobalReceiver(C2S_TILE_REQUEST, (server, player, handler, buffer, responseSender) -> {
-			TileRequestPayload payload = TileRequestPayload.read(buffer);
-			server.execute(() -> runForAcceptedClient(player, () -> sendTileDataIfAvailable(player, payload)));
-		});
-		ServerPlayNetworking.registerGlobalReceiver(C2S_TILE_BATCH_REQUEST, (server, player, handler, buffer, responseSender) -> {
-			TileBatchRequestPayload payload = TileBatchRequestPayload.read(buffer);
-			server.execute(() -> runForAcceptedClient(player, () -> sendTileBatchDataIfAvailable(player, payload)));
-		});
-		ServerPlayNetworking.registerGlobalReceiver(C2S_MAP_NODE_REQUEST, (server, player, handler, buffer, responseSender) -> {
-			MapNodeRequestPayload payload = MapNodeRequestPayload.read(buffer);
-			server.execute(() -> runForAcceptedClient(player, () -> sendMapNodeResponse(player, payload)));
-		});
-		ServerPlayNetworking.registerGlobalReceiver(C2S_LOCAL_TILE_READY, (server, player, handler, buffer, responseSender) -> {
-			LocalTileReadyPayload payload = LocalTileReadyPayload.read(buffer);
-			server.execute(() -> runForAcceptedClient(player, () -> handleLocalTileReady(player, payload)));
-		});
-		ServerPlayNetworking.registerGlobalReceiver(C2S_LOCAL_TILE_DATA, (server, player, handler, buffer, responseSender) -> {
-			int packetBytes = buffer.readableBytes();
-			if (!SharedMapServer.hasAcceptedClient(player.getUUID())) {
-				XaeroMapsync_r.LOGGER.warn("Rejected local tile upload before accepted handshake from {} bytes={}",
-						player.getGameProfile().getName(), packetBytes);
-				return;
-			}
-			if (packetBytes > SharedMapConfig.maxPacketBytes()) {
-				XaeroMapsync_r.LOGGER.warn("Rejected oversized local tile upload from {} bytes={} maxPacketBytes={}",
-						player.getGameProfile().getName(), packetBytes, SharedMapConfig.maxPacketBytes());
-				return;
-			}
-			if (!CLIENT_TILE_UPLOAD_LIMITER.acquire(player.getUUID(), packetBytes, System.currentTimeMillis())) {
-				XaeroMapsync_r.LOGGER.debug("Rate-limited local tile upload from {} bytes={}",
-						player.getGameProfile().getName(), packetBytes);
-				return;
-			}
-			TileDataPayload payload;
-			try {
-				payload = TileDataPayload.read(buffer);
-			} catch (RuntimeException exception) {
-				XaeroMapsync_r.LOGGER.warn("Rejected malformed client tile upload from {}", player.getGameProfile().getName());
-				return;
-			}
-			server.execute(() -> runForAcceptedClient(player, () -> handleLocalTileData(player, payload)));
+		ServerPlayNetworking.registerGlobalReceiver(C2S_PATCH_REQUEST, (server, player, handler, buffer, responseSender) -> {
+			PatchRequestPayload payload = PatchRequestPayload.read(buffer);
+			server.execute(() -> runForAcceptedClient(player, () -> sendPatchDataIfAvailable(player, payload)));
 		});
 		ServerPlayNetworking.registerGlobalReceiver(C2S_TRANSFER_ACK, (server, player, handler, buffer, responseSender) -> {
 			TransferAckPayload payload = TransferAckPayload.read(buffer);
@@ -155,6 +127,11 @@ public final class SharedMapNetworking {
 					XaeroMapsync_r.LOGGER.warn("Rejected invalid transfer acknowledgement from {}", player.getGameProfile().getName(), exception);
 				}
 			}));
+		});
+		ServerPlayNetworking.registerGlobalReceiver(C2S_TRANSFER_NACK, (server, player, handler, buffer, responseSender) -> {
+			TransferNackPayload payload = TransferNackPayload.read(buffer);
+			server.execute(() -> runForAcceptedClient(player,
+					() -> SharedMapServer.transfers().negativeAcknowledge(player.getUUID(), payload)));
 		});
 		ServerPlayNetworking.registerGlobalReceiver(C2S_WAYPOINT_CREATE, (server, player, handler, buffer, responseSender) -> {
 			WaypointCreatePayload payload = WaypointCreatePayload.read(buffer);
@@ -213,29 +190,17 @@ public final class SharedMapNetworking {
 			WaypointErrorPayload payload = WaypointErrorPayload.read(buffer);
 			client.execute(() -> SharedMapClient.handleWaypointError(payload.message()));
 		});
-		ClientPlayNetworking.registerGlobalReceiver(S2C_MAP_INDEX_SNAPSHOT, (client, handler, buffer, responseSender) -> {
-			MapTileIndexSnapshotPayload payload = MapTileIndexSnapshotPayload.read(buffer);
-			client.execute(() -> SharedMapClient.handleMapTileIndexSnapshot(payload));
+		ClientPlayNetworking.registerGlobalReceiver(S2C_PATCH_MANIFEST_PAGE, (client, handler, buffer, responseSender) -> {
+			PatchManifestPagePayload payload = PatchManifestPagePayload.read(buffer);
+			client.execute(() -> SharedMapClient.handlePatchManifestPage(payload));
 		});
-		ClientPlayNetworking.registerGlobalReceiver(S2C_MAP_MERKLE_SNAPSHOT, (client, handler, buffer, responseSender) -> {
-			MapMerkleSnapshotPayload payload = MapMerkleSnapshotPayload.read(buffer);
-			client.execute(() -> SharedMapClient.handleMerkleSnapshot(payload));
+		ClientPlayNetworking.registerGlobalReceiver(S2C_PATCH_DATA, (client, handler, buffer, responseSender) -> {
+			PatchDataPayload payload = PatchDataPayload.read(buffer);
+			client.execute(() -> SharedMapClient.handlePatchData(payload));
 		});
-		ClientPlayNetworking.registerGlobalReceiver(S2C_TILE_DATA, (client, handler, buffer, responseSender) -> {
-			TileDataPayload payload = TileDataPayload.read(buffer);
-			client.execute(() -> SharedMapClient.handleTileData(payload));
-		});
-		ClientPlayNetworking.registerGlobalReceiver(S2C_TILE_DATA_BATCH, (client, handler, buffer, responseSender) -> {
-			TileBatchDataPayload payload = TileBatchDataPayload.read(buffer);
-			client.execute(() -> SharedMapClient.handleTileDataBatch(payload));
-		});
-		ClientPlayNetworking.registerGlobalReceiver(S2C_TILE_UNAVAILABLE, (client, handler, buffer, responseSender) -> {
-			TileUnavailablePayload payload = TileUnavailablePayload.read(buffer);
-			client.execute(() -> SharedMapClient.handleTileUnavailable(payload));
-		});
-		ClientPlayNetworking.registerGlobalReceiver(S2C_MAP_NODE_RESPONSE, (client, handler, buffer, responseSender) -> {
-			MapNodeResponsePayload payload = MapNodeResponsePayload.read(buffer);
-			client.execute(() -> SharedMapClient.handleMapNodeResponse(payload));
+		ClientPlayNetworking.registerGlobalReceiver(S2C_PATCH_UNAVAILABLE, (client, handler, buffer, responseSender) -> {
+			PatchUnavailablePayload payload = PatchUnavailablePayload.read(buffer);
+			client.execute(() -> SharedMapClient.handlePatchUnavailable(payload));
 		});
 		ClientPlayNetworking.registerGlobalReceiver(S2C_TRANSFER_PART, (client, handler, buffer, responseSender) -> {
 			TransferPartPayload payload = TransferPartPayload.read(buffer);
@@ -314,6 +279,12 @@ public final class SharedMapNetworking {
 		FriendlyByteBuf buffer = PacketByteBufs.create();
 		payload.write(buffer);
 		ServerPlayNetworking.send(player, S2C_TRANSFER_PART, buffer);
+		if (SharedMapServer.traceEnabled(player.getUUID())) {
+			XaeroMapsync_r.LOGGER.trace(
+					"map_sync event=fragment_sent trace_id={} player={} transfer_id={} part={} part_count={} bytes={} crc={}",
+					traceId(player), player.getGameProfile().getName(), payload.transferId(), payload.partIndex(),
+					payload.partCount(), payload.payload().length, payload.checksum());
+		}
 	}
 
 	@Environment(EnvType.CLIENT)
@@ -334,7 +305,22 @@ public final class SharedMapNetworking {
 				SharedMapClientConfig.get().publicWaypointsEnabled(), SharedMapClientConfig.get().mapSyncEnabled(),
 				SharedMapClient.mapSyncAvailable());
 		if (SharedMapClientConfig.get().publicWaypointsEnabled()) requestWaypointSnapshot();
-		if (SharedMapClientConfig.get().mapSyncEnabled() && SharedMapClient.mapSyncAvailable()) requestMapSync();
+	}
+
+	@Environment(EnvType.CLIENT)
+	public static void requestPatchManifests(String dimension, long syncId, long expectedEpoch, int cursor,
+			int centerChunkX, int centerChunkZ, double motionX, double motionZ) {
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		new PatchManifestRequestPayload(dimension, syncId, expectedEpoch, cursor, centerChunkX, centerChunkZ,
+				motionX, motionZ).write(buffer);
+		ClientPlayNetworking.send(C2S_PATCH_MANIFEST_REQUEST, buffer);
+	}
+
+	@Environment(EnvType.CLIENT)
+	public static void requestPatch(MapPatchManifest manifest) {
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		new PatchRequestPayload(manifest.key(), manifest.epoch(), manifest.contentHash()).write(buffer);
+		ClientPlayNetworking.send(C2S_PATCH_REQUEST, buffer);
 	}
 
 	@Environment(EnvType.CLIENT)
@@ -403,6 +389,145 @@ public final class SharedMapNetworking {
 		XaeroMapsync_r.LOGGER.debug("Sending waypoint visibility snapshot to {} visibleCount={} team={}",
 				player.getGameProfile().getName(), visible.size(), actor.teamName());
 		ServerPlayNetworking.send(player, S2C_WAYPOINT_SNAPSHOT, buffer);
+	}
+
+	private static void sendPatchManifestPage(net.minecraft.server.level.ServerPlayer player,
+			PatchManifestRequestPayload request) {
+		if (!SharedMapConfig.mapSyncEnabled()) {
+			XaeroMapsync_r.LOGGER.debug("map_sync event=manifest_rejected player={} reason=kill_switch",
+					player.getGameProfile().getName());
+			return;
+		}
+		String playerDimension = player.getLevel().dimension().location().toString();
+		if (!playerDimension.equals(request.dimension())) {
+			XaeroMapsync_r.LOGGER.warn("map_sync event=manifest_rejected player={} dimension={} player_dimension={} reason=dimension_mismatch",
+					player.getGameProfile().getName(), request.dimension(), playerDimension);
+			return;
+		}
+		net.minecraft.server.MinecraftServer server = player.getServer();
+		try {
+			TILE_BATCH_WORKERS.execute(() -> {
+				cn.net.rms.xaeromapsync_r.map.MapPatchCatalog.Snapshot catalogSnapshot =
+						SharedMapServer.patches().snapshot(request.dimension());
+				List<MapPatchManifest> sorted = cn.net.rms.xaeromapsync_r.server.ViewportPatchPrioritizer.sort(
+						catalogSnapshot.manifests(), request.centerChunkX(), request.centerChunkZ(),
+						request.motionX(), request.motionZ());
+				long currentEpoch = catalogSnapshot.epoch();
+				int cursor = request.expectedEpoch() != 0L && request.expectedEpoch() != currentEpoch ? 0 : request.cursor();
+				cursor = Math.min(cursor, sorted.size());
+				int nextCursor = Math.min(sorted.size(), cursor + PatchManifestPagePayload.MAX_MANIFESTS);
+				PatchManifestPagePayload page = new PatchManifestPagePayload(request.syncId(), currentEpoch, nextCursor,
+						sorted.size(), sorted.subList(cursor, nextCursor));
+				try {
+					server.execute(() -> sendPatchManifestPagePayload(player, page));
+				} catch (RejectedExecutionException ignored) {
+					// Server stopped while the bounded manifest page was prepared.
+				}
+			});
+		} catch (RejectedExecutionException exception) {
+			XaeroMapsync_r.LOGGER.warn("map_sync event=manifest_rejected player={} reason=worker_queue_full",
+					player.getGameProfile().getName());
+		}
+	}
+
+	private static void sendPatchManifestPagePayload(net.minecraft.server.level.ServerPlayer player,
+			PatchManifestPagePayload page) {
+		if (player.getServer().getPlayerList().getPlayer(player.getUUID()) != player) return;
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		page.write(buffer);
+		XaeroMapsync_r.LOGGER.info(
+				"map_sync event=manifest_page_sent trace_id={} player={} sync_id={} epoch={} cursor={} total={} count={} bytes={}",
+				traceId(player), player.getGameProfile().getName(), page.syncId(), page.epoch(), page.nextCursor(), page.totalCount(),
+				page.manifests().size(), buffer.readableBytes());
+		if (buffer.readableBytes() <= SharedMapConfig.maxPacketBytes()
+				&& SharedMapServer.networkBudget().trySpend(player.getUUID(), buffer.readableBytes())) {
+			ServerPlayNetworking.send(player, S2C_PATCH_MANIFEST_PAGE, buffer);
+			return;
+		}
+		byte[] envelope = new byte[buffer.readableBytes() + 1];
+		envelope[0] = TRANSFER_TYPE_PATCH_MANIFEST_PAGE;
+		buffer.readBytes(envelope, 1, buffer.readableBytes());
+		startTransfer(player, envelope, true);
+	}
+
+	private static void sendPatchDataIfAvailable(net.minecraft.server.level.ServerPlayer player, PatchRequestPayload request) {
+		if (!SharedMapConfig.mapSyncEnabled() || SharedMapConfig.mapSyncShadowMode()) {
+			sendPatchUnavailable(player, request, SharedMapConfig.mapSyncShadowMode() ? "shadow-mode" : "kill-switch");
+			return;
+		}
+		String playerDimension = player.getLevel().dimension().location().toString();
+		if (!playerDimension.equals(request.key().dimension())) {
+			sendPatchUnavailable(player, request, "dimension-mismatch");
+			return;
+		}
+		net.minecraft.server.MinecraftServer server = player.getServer();
+		try {
+			TILE_BATCH_WORKERS.execute(() -> {
+				PatchDataPayload data = null;
+				String failure = null;
+				try {
+					MapPatchManifest current = SharedMapServer.patches().manifest(request.key()).orElse(null);
+					if (current == null) {
+						failure = "incomplete-patch";
+					} else if (current.epoch() != request.epoch() || current.contentHash() != request.manifestHash()) {
+						failure = "stale-manifest";
+					} else {
+						MapPatch patch = SharedMapServer.patches().load(current).orElse(null);
+						if (patch == null) {
+							failure = "missing-tile-body";
+						} else {
+							List<TileDataPayload> tiles = new ArrayList<>(patch.tiles().size());
+							for (MapTile tile : patch.tiles()) {
+								MapPatchManifest.TileReference reference = current.tiles().stream()
+										.filter(item -> item.chunkX() == tile.chunkX() && item.chunkZ() == tile.chunkZ())
+										.findFirst().orElseThrow();
+								tiles.add(TileDataPayload.fromTile(tile, reference.revision(), SharedMapConfig.compression()));
+							}
+							data = new PatchDataPayload(current, tiles);
+						}
+					}
+				} catch (RuntimeException exception) {
+					failure = "encode-failed";
+					XaeroMapsync_r.LOGGER.error(
+							"map_sync event=patch_prepare_failed trace_id={} player={} patch_id={} epoch={}",
+							traceId(player), player.getGameProfile().getName(), request.key().stableId(), request.epoch(), exception);
+				}
+				PatchDataPayload prepared = data;
+				String reason = failure;
+				try {
+					server.execute(() -> {
+						if (prepared == null) sendPatchUnavailable(player, request, reason);
+						else sendPatchData(player, prepared);
+					});
+				} catch (RejectedExecutionException ignored) {
+					// Server stopped while the bounded patch body was prepared.
+				}
+			});
+		} catch (RejectedExecutionException exception) {
+			sendPatchUnavailable(player, request, "worker-queue-full");
+		}
+	}
+
+	private static void sendPatchData(net.minecraft.server.level.ServerPlayer player, PatchDataPayload payload) {
+		if (player.getServer().getPlayerList().getPlayer(player.getUUID()) != player) return;
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		payload.write(buffer);
+		byte[] envelope = new byte[buffer.readableBytes() + 1];
+		envelope[0] = TRANSFER_TYPE_PATCH_DATA;
+		buffer.readBytes(envelope, 1, buffer.readableBytes());
+		XaeroMapsync_r.LOGGER.info("map_sync event=patch_transfer_started trace_id={} player={} patch_id={} epoch={} tiles={} bytes={}",
+				traceId(player), player.getGameProfile().getName(), payload.patch().manifest().key().stableId(),
+				payload.patch().manifest().epoch(), payload.tiles().size(), envelope.length);
+		startTransfer(player, envelope, true);
+	}
+
+	private static void sendPatchUnavailable(net.minecraft.server.level.ServerPlayer player, PatchRequestPayload request,
+			String reason) {
+		FriendlyByteBuf buffer = PacketByteBufs.create();
+		new PatchUnavailablePayload(request.key(), reason == null ? "unavailable" : reason).write(buffer);
+		ServerPlayNetworking.send(player, S2C_PATCH_UNAVAILABLE, buffer);
+		XaeroMapsync_r.LOGGER.warn("map_sync event=patch_unavailable trace_id={} player={} patch_id={} epoch={} reason={}",
+				traceId(player), player.getGameProfile().getName(), request.key().stableId(), request.epoch(), reason);
 	}
 
 	private static void sendMapIndexIfChanged(net.minecraft.server.level.ServerPlayer player, MapRootHashPayload request) {
@@ -1004,6 +1129,10 @@ public final class SharedMapNetworking {
 		action.run();
 	}
 
+	private static java.util.UUID traceId(net.minecraft.server.level.ServerPlayer player) {
+		return SharedMapServer.clientState(player.getUUID()).map(value -> value.traceId()).orElse(null);
+	}
+
 	private static void startTransfer(net.minecraft.server.level.ServerPlayer player, byte[] envelope) {
 		startTransfer(player, envelope, true);
 	}
@@ -1025,13 +1154,21 @@ public final class SharedMapNetworking {
 	@Environment(EnvType.CLIENT)
 	private static final class ClientTransfers {
 		private static final ClientTransferManager MANAGER = new ClientTransferManager(
-				ClientTransfers::sendAck, ClientTransfers::handleCompleted);
+				ClientTransfers::sendAck, ClientTransfers::sendNack, ClientTransfers::handleCompleted);
 
 		private static void sendAck(TransferAckPayload payload) {
 			net.minecraft.client.Minecraft.getInstance().execute(() -> {
 				FriendlyByteBuf buffer = PacketByteBufs.create();
 				payload.write(buffer);
 				ClientPlayNetworking.send(C2S_TRANSFER_ACK, buffer);
+			});
+		}
+
+		private static void sendNack(TransferNackPayload payload) {
+			net.minecraft.client.Minecraft.getInstance().execute(() -> {
+				FriendlyByteBuf buffer = PacketByteBufs.create();
+				payload.write(buffer);
+				ClientPlayNetworking.send(C2S_TRANSFER_NACK, buffer);
 			});
 		}
 
@@ -1052,6 +1189,16 @@ public final class SharedMapNetworking {
 			if (type == TRANSFER_TYPE_TILE_DATA_BATCH) {
 				TileBatchDataPayload payload = TileBatchDataPayload.read(buffer);
 				net.minecraft.client.Minecraft.getInstance().execute(() -> SharedMapClient.handleTileDataBatch(payload));
+				return;
+			}
+			if (type == TRANSFER_TYPE_PATCH_MANIFEST_PAGE) {
+				PatchManifestPagePayload payload = PatchManifestPagePayload.read(buffer);
+				net.minecraft.client.Minecraft.getInstance().execute(() -> SharedMapClient.handlePatchManifestPage(payload));
+				return;
+			}
+			if (type == TRANSFER_TYPE_PATCH_DATA) {
+				PatchDataPayload payload = PatchDataPayload.read(buffer);
+				net.minecraft.client.Minecraft.getInstance().execute(() -> SharedMapClient.handlePatchData(payload));
 				return;
 			}
 			throw new IllegalArgumentException("Unknown transfer envelope type: " + type);

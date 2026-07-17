@@ -50,6 +50,22 @@ final class TileBatchPayloadTest {
 		assertThrows(IllegalArgumentException.class, () -> new TileBatchDataPayload(tiles));
 	}
 
+	@Test
+	void serverSplitsTileDataBatchesBeforeTheyExceedPacketBudget() {
+		List<TileDataPayload> tiles = new ArrayList<>();
+		for (int index = 0; index < 6; index++) {
+			MapTile tile = MapTileDataStoreTest.tile("minecraft:overworld", index, 0, index);
+			tiles.add(new TileDataPayload(tile, index + 1L, "zlib", new byte[900]));
+		}
+
+		List<TileBatchDataPayload> batches = SharedMapNetworking.splitTileDataBatchesForPacketBudget(tiles, 2_200);
+
+		assertEquals(3, batches.size());
+		assertEquals(2, batches.get(0).tiles().size());
+		assertEquals(2, batches.get(1).tiles().size());
+		assertEquals(2, batches.get(2).tiles().size());
+	}
+
 	private static TileBatchRequestPayload roundTrip(TileBatchRequestPayload payload) {
 		FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.buffer());
 		payload.write(buffer);

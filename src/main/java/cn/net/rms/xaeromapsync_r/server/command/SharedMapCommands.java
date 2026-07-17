@@ -27,7 +27,15 @@ public final class SharedMapCommands {
 				.then(literal("status").executes(context -> {
 					context.getSource().sendSuccess(new TextComponent(statusMessage()), false);
 					return 1;
-				}))
+				}).then(net.minecraft.commands.Commands.argument("player", net.minecraft.commands.arguments.EntityArgument.player())
+						.executes(context -> playerStatus(context.getSource(),
+								net.minecraft.commands.arguments.EntityArgument.getPlayer(context, "player")))))
+				.then(literal("trace")
+						.then(net.minecraft.commands.Commands.argument("player", net.minecraft.commands.arguments.EntityArgument.player())
+								.then(net.minecraft.commands.Commands.argument("seconds", IntegerArgumentType.integer(1, 300))
+										.executes(context -> enableTrace(context.getSource(),
+												net.minecraft.commands.arguments.EntityArgument.getPlayer(context, "player"),
+												IntegerArgumentType.getInteger(context, "seconds"))))))
 				.then(literal("save").executes(context -> {
 					SharedMapServer.waypoints().save(context.getSource().getServer());
 					SharedMapServer.access().save(context.getSource().getServer());
@@ -311,6 +319,8 @@ public final class SharedMapCommands {
 
 	private static String statusMessage() {
 		return "Shared map clients=" + SharedMapServer.acceptedClientCount()
+				+ ", mapSyncEnabled=" + cn.net.rms.xaeromapsync_r.config.SharedMapConfig.mapSyncEnabled()
+				+ ", shadowMode=" + cn.net.rms.xaeromapsync_r.config.SharedMapConfig.mapSyncShadowMode()
 				+ ", exploredChunks=" + SharedMapServer.exploredChunks().totalCount()
 				+ ", mapTiles=" + SharedMapServer.mapTiles().totalCount()
 				+ ", rootHash=" + Long.toUnsignedString(SharedMapServer.mapTiles().rootHash())
@@ -334,6 +344,29 @@ public final class SharedMapCommands {
 				+ ", bandwidthRejected=" + SharedMapServer.networkBudget().rejectedBytes()
 				+ ", publicWaypoints=" + SharedMapServer.waypoints().activeCount()
 				+ ", deletedWaypoints=" + SharedMapServer.waypoints().deletedCount();
+	}
+
+	private static int playerStatus(net.minecraft.commands.CommandSourceStack source,
+			net.minecraft.server.level.ServerPlayer player) {
+		String dimension = player.getLevel().dimension().location().toString();
+		String state = SharedMapServer.clientState(player.getUUID()).map(value -> "accepted=" + value.accepted()
+				+ ", traceId=" + value.traceId() + ", connectedMs=" + (System.currentTimeMillis() - value.connectedAtMillis()))
+				.orElse("not-handshaken");
+		int completePatches = SharedMapServer.patches().manifests(dimension).size();
+		source.sendSuccess(new TextComponent("Shared map player=" + player.getGameProfile().getName() + ", " + state
+				+ ", dimension=" + dimension + ", chunk=" + player.chunkPosition().x + "," + player.chunkPosition().z
+				+ ", completePatches=" + completePatches + ", traceEnabled="
+				+ SharedMapServer.traceEnabled(player.getUUID())), false);
+		return 1;
+	}
+
+	private static int enableTrace(net.minecraft.commands.CommandSourceStack source,
+			net.minecraft.server.level.ServerPlayer player, int seconds) {
+		SharedMapServer.enableTrace(player.getUUID(), seconds);
+		UUID traceId = SharedMapServer.clientState(player.getUUID()).map(value -> value.traceId()).orElse(null);
+		source.sendSuccess(new TextComponent("Enabled detailed shared map trace for "
+				+ player.getGameProfile().getName() + " for " + seconds + " seconds; traceId=" + traceId + "."), true);
+		return seconds;
 	}
 
 	private static String format(double value) {

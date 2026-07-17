@@ -12,8 +12,8 @@ import org.junit.jupiter.api.Test;
 
 final class MapSyncRequestPayloadTest {
 	@Test
-	void batchTileProtocolUsesVersionSeven() {
-		assertEquals(7, SharedMapProtocolDefaults.PROTOCOL_VERSION);
+	void atomicPatchProtocolUsesVersionEight() {
+		assertEquals(8, SharedMapProtocolDefaults.PROTOCOL_VERSION);
 	}
 
 	@Test

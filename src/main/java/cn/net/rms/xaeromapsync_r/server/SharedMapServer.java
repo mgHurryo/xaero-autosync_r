@@ -3,6 +3,7 @@ package cn.net.rms.xaeromapsync_r.server;
 import cn.net.rms.xaeromapsync_r.XaeroMapsync_r;
 import cn.net.rms.xaeromapsync_r.map.MapTileIndexStore;
 import cn.net.rms.xaeromapsync_r.map.MapTileDataStore;
+import cn.net.rms.xaeromapsync_r.map.MapPatchCatalog;
 import cn.net.rms.xaeromapsync_r.network.ClientHelloPayload;
 import cn.net.rms.xaeromapsync_r.server.command.SharedMapCommands;
 import cn.net.rms.xaeromapsync_r.server.access.SharedMapAccessManager;
@@ -35,11 +36,13 @@ import net.minecraft.world.level.ChunkPos;
 public final class SharedMapServer {
 	private static final Map<UUID, ServerClientState> CLIENTS = new ConcurrentHashMap<>();
 	private static final Map<UUID, Optional<String>> CLIENT_TEAMS = new ConcurrentHashMap<>();
+	private static final Map<UUID, Long> TRACE_UNTIL_MILLIS = new ConcurrentHashMap<>();
 	private static final PublicWaypointStore WAYPOINTS = new PublicWaypointStore();
 	private static final ExploredChunkStore EXPLORED_CHUNKS = new ExploredChunkStore();
 	private static final DirtyChunkStore DIRTY_CHUNKS = new DirtyChunkStore();
 	private static final MapTileIndexStore MAP_TILES = new MapTileIndexStore();
 	private static final MapTileDataStore TILE_DATA = new MapTileDataStore();
+	private static final MapPatchCatalog PATCHES = new MapPatchCatalog(MAP_TILES, TILE_DATA);
 	private static final NetworkBudgetTracker NETWORK_BUDGET = new NetworkBudgetTracker();
 	private static final SharedMapAccessManager ACCESS = new SharedMapAccessManager();
 	private static final SharedMapPermissionPolicy PERMISSIONS = new SharedMapPermissionPolicy(ACCESS.regions());
@@ -129,6 +132,7 @@ public final class SharedMapServer {
 			ACCESS.save(server);
 			CLIENTS.clear();
 			CLIENT_TEAMS.clear();
+			TRACE_UNTIL_MILLIS.clear();
 		});
 		ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
 			XaeroMapsync_r.LOGGER.info("Shared map client disconnected: {} acceptedBeforeDisconnect={}",
@@ -136,6 +140,7 @@ public final class SharedMapServer {
 			TRANSFERS.cancelPlayer(handler.player.getUUID());
 			CLIENTS.remove(handler.player.getUUID());
 			CLIENT_TEAMS.remove(handler.player.getUUID());
+			TRACE_UNTIL_MILLIS.remove(handler.player.getUUID());
 		});
 	}
 
@@ -171,10 +176,12 @@ public final class SharedMapServer {
 	}
 
 	public static void recordHandshake(ServerPlayer player, ClientHelloPayload hello, boolean accepted) {
-		CLIENTS.put(player.getUUID(), new ServerClientState(player.getUUID(), player.getGameProfile().getName(), accepted));
+		ServerClientState clientState = new ServerClientState(player.getUUID(), player.getGameProfile().getName(), accepted);
+		CLIENTS.put(player.getUUID(), clientState);
 		if (accepted) {
 			CLIENT_TEAMS.put(player.getUUID(), currentTeam(player));
-			XaeroMapsync_r.LOGGER.info("Shared map client accepted: {} protocol={} mapFormat={} xaeroAdapter={} compression={} maxPacketBytes={}",
+			XaeroMapsync_r.LOGGER.info("map_sync event=client_accepted trace_id={} player={} protocol={} map_format={} xaero_adapter={} compression={} max_packet_bytes={}",
+					clientState.traceId(),
 					player.getGameProfile().getName(),
 					hello.protocolVersion(),
 					hello.mapFormatVersion(),
@@ -187,7 +194,8 @@ public final class SharedMapServer {
 			return;
 		}
 		CLIENT_TEAMS.remove(player.getUUID());
-		XaeroMapsync_r.LOGGER.warn("Shared map client rejected: {} protocol={} mapFormat={}",
+		XaeroMapsync_r.LOGGER.warn("map_sync event=client_rejected trace_id={} player={} protocol={} map_format={}",
+				clientState.traceId(),
 				player.getGameProfile().getName(),
 				hello.protocolVersion(),
 				hello.mapFormatVersion());
@@ -206,6 +214,20 @@ public final class SharedMapServer {
 			}
 		}
 		return count;
+	}
+
+	public static MapPatchCatalog patches() { return PATCHES; }
+	public static Optional<ServerClientState> clientState(UUID playerId) { return Optional.ofNullable(CLIENTS.get(playerId)); }
+	public static void enableTrace(UUID playerId, int seconds) {
+		TRACE_UNTIL_MILLIS.put(playerId, System.currentTimeMillis() + seconds * 1_000L);
+	}
+	public static boolean traceEnabled(UUID playerId) {
+		long until = TRACE_UNTIL_MILLIS.getOrDefault(playerId, 0L);
+		if (until <= System.currentTimeMillis()) {
+			TRACE_UNTIL_MILLIS.remove(playerId);
+			return false;
+		}
+		return true;
 	}
 
 	private static void refreshChangedTeamVisibility(net.minecraft.server.MinecraftServer server) {

@@ -16,6 +16,17 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      - name: Verify release pull request source
+        if: github.event_name == 'pull_request' && github.base_ref == 'release'
+        env:
+          RELEASE_SOURCE_BRANCH: ${{ github.head_ref }}
+          RELEASE_SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$RELEASE_SOURCE_BRANCH" != "master" ] || [ "$RELEASE_SOURCE_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
+            echo "release only accepts pull requests from this repository's master branch" >&2
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v6
 

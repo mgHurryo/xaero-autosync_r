@@ -18,7 +18,7 @@
 5. 再次等待 `release` Pull Request 的 Gradle build、完整测试和 Qodana 全部通过，然后合并。
 6. 从最新 `release` 提交执行干净构建，验证版本元数据、产物内容和 SHA-256。
 7. 在该 `release` 提交创建 annotated tag，推送 tag，并等待 tag 对应的 build 通过。
-8. 使用已经验证的 tag 创建 GitHub Release。发布资产只能来自同一提交的干净构建。
+8. 使用已经验证的 tag 创建 GitHub Release。发布资产只能来自同一提交的干净构建；Release 发布后，`release-message` Action 自动根据 PR 历史生成并更新 message。
 
 ## 发布门禁
 
@@ -27,6 +27,7 @@
 - 发布资产不得包含上游 Xaero fixture、用户数据、密钥、日志或本地运行目录。
 - Release 必须附主 JAR、sources JAR 和覆盖全部资产的 `SHA256SUMS`。
 - alpha、beta 和 rc 版本必须标记为 prerelease。
+- `release` 历史中已有 Release 需要重新生成 message 时，只允许通过 `release-message` 的手动 `tag` 输入执行；工作流会重新校验 annotated tag、版本、分支归属、状态、资产和 SHA-256。
 
 ## 修复与回滚
 

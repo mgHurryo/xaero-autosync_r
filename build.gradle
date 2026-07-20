@@ -94,8 +94,21 @@ tasks.register("prepareXaeroTestMods", Sync) {
 	}
 }
 
+def xaeroFixtureDirectory = providers.environmentVariable("XAERO_FIXTURE_DIRECTORY").orElse("xaeromap-origin")
+def expectedWorldFixtures = providers.environmentVariable("XAERO_EXPECTED_WORLD_FIXTURES").orElse("12")
+def expectedMinimapFixtures = providers.environmentVariable("XAERO_EXPECTED_MINIMAP_FIXTURES").orElse("3")
+
 test {
 	useJUnitPlatform()
+	inputs.property("xaeroFixtureDirectory", xaeroFixtureDirectory)
+	inputs.property("xaeroExpectedWorldFixtures", expectedWorldFixtures)
+	inputs.property("xaeroExpectedMinimapFixtures", expectedMinimapFixtures)
+	inputs.files(xaeroFixtureDirectory.map { directory ->
+		fileTree(directory) {
+			include "XaerosWorldMap_*_Fabric_1.17.1.jar"
+			include "Xaeros_Minimap_*_Fabric_1.17.1.jar"
+		}
+	}).withPropertyName("xaeroCompatibilityFixtures").withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 processResources {

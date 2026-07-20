@@ -17,6 +17,6 @@ World Map releases form nine relevant binary signature families. The adaptive ru
 
 ## Verification
 
-`XaeroCompatibilityTest` enumerates all 154 published Fabric versions. `XaeroBinaryCompatibilityTest` validates the earliest and latest Minimap contracts and representative World Map JARs for every signature family. CI downloads only these representatives, verifies fixed SHA-256 hashes, and never executes code from the fixtures.
+`XaeroCompatibilityTest` enumerates all 154 published Fabric versions. `XaeroBinaryCompatibilityTest` scans every supplied fixture and validates its Fabric metadata and the complete reflection contract without executing fixture code. The `3.0.0-alpha.7` release was checked against all 74 World Map and 80 Minimap JARs published for Minecraft 1.17.1. CI keeps 12 World Map and 3 Minimap representatives, including the transitional World Map `1.17.3` API, and verifies their fixed SHA-256 hashes. This binary-contract matrix does not replace an in-game end-to-end run of every upstream version.
 
 For a local runtime check, place the desired Fabric 1.17.1 pair in `xaeromap-origin` and select it through `scripts/prepare-local-integration.ps1`. The default pair is World Map `1.37.8` and Minimap `23.9.7`.

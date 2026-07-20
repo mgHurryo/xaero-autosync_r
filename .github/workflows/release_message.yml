@@ -1,0 +1,207 @@
+name: release-message
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag whose message should be regenerated
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-message-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  generate-release-message:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUBLISHED_TAG: ${{ github.event.release.tag_name }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "release" ]; then
+            tag="$PUBLISHED_TAG"
+          else
+            tag="$REQUESTED_TAG"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Invalid semantic release tag: $tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release branch
+        uses: actions/checkout@v6
+        with:
+          ref: release
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Validate release tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/release:refs/remotes/origin/release"
+          git fetch origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          tag_type="$(git cat-file -t "refs/tags/${RELEASE_TAG}")"
+          if [ "$tag_type" != "tag" ]; then
+            echo "Release tag $RELEASE_TAG must be annotated" >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          release_head="$(git rev-parse refs/remotes/origin/release)"
+          if [ "$EVENT_NAME" = "release" ]; then
+            if [ "$tag_commit" != "$release_head" ]; then
+              echo "New release tag $RELEASE_TAG must point to release HEAD $release_head" >&2
+              exit 1
+            fi
+          elif ! git merge-base --is-ancestor "$tag_commit" "$release_head"; then
+            echo "Existing release tag $RELEASE_TAG is not part of release history" >&2
+            exit 1
+          fi
+
+          expected_version="${RELEASE_TAG#v}"
+          actual_version="$(git show "${tag_commit}:gradle.properties" | sed -n 's/^mod_version=//p')"
+          if [ "$expected_version" != "$actual_version" ]; then
+            echo "Tag version $expected_version does not match mod version $actual_version" >&2
+            exit 1
+          fi
+
+      - name: Validate existing release and assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUBLISHED_RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          release_file="${RUNNER_TEMP}/release-before.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" > "$release_file"
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            actual_release_id="$(jq -r '.id' "$release_file")"
+            if [ "$actual_release_id" != "$PUBLISHED_RELEASE_ID" ]; then
+              echo "Published release id does not match tag lookup" >&2
+              exit 1
+            fi
+          fi
+
+          version="${RELEASE_TAG#v}"
+          main_jar="xaero-mapsync_r-${version}.jar"
+          sources_jar="xaero-mapsync_r-${version}-sources.jar"
+          jq -e --arg tag "$RELEASE_TAG" \
+            --arg main "$main_jar" --arg sources "$sources_jar" '
+              .tag_name == $tag and .name == $tag and .draft == false and .target_commitish == "release" and
+              ([.assets[].name] | sort) == (["SHA256SUMS", $main, $sources] | sort)
+            ' "$release_file" > /dev/null
+
+          expected_prerelease=false
+          version_without_build="${RELEASE_TAG%%+*}"
+          if [[ "$version_without_build" == *-* ]]; then
+            expected_prerelease=true
+          fi
+          jq -e --argjson expected "$expected_prerelease" \
+            '.prerelease == $expected' "$release_file" > /dev/null
+
+          assets_dir="${RUNNER_TEMP}/release-assets"
+          mkdir -p "$assets_dir"
+          gh release download "$RELEASE_TAG" --dir "$assets_dir"
+          normalized_sums="${assets_dir}/SHA256SUMS.normalized"
+          tr -d '\r' < "${assets_dir}/SHA256SUMS" > "$normalized_sums"
+          printf '%s\n' "$main_jar" "$sources_jar" | sort > "${RUNNER_TEMP}/expected-checksum-files.txt"
+          awk '{print $2}' "$normalized_sums" | sort > "${RUNNER_TEMP}/actual-checksum-files.txt"
+          diff "${RUNNER_TEMP}/expected-checksum-files.txt" "${RUNNER_TEMP}/actual-checksum-files.txt"
+          (cd "$assets_dir" && sha256sum --strict --check "$(basename "$normalized_sums")")
+
+          jq -S '{
+            tag_name, name, draft, prerelease, target_commitish,
+            assets: ([.assets[] | {id, name, size, label, content_type, digest}] | sort_by(.id))
+          }' "$release_file" > "${RUNNER_TEMP}/release-immutable-before.json"
+
+      - name: Generate and update release message
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          release_file="${RUNNER_TEMP}/release-before.json"
+          tag_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          request_file="${RUNNER_TEMP}/generate-release-notes-request.json"
+          notes_file="${RUNNER_TEMP}/generated-release-notes.json"
+          generated_body_file="${RUNNER_TEMP}/generated-release-notes.md"
+          patch_file="${RUNNER_TEMP}/release-message-patch.json"
+          jq -n --arg tag "$RELEASE_TAG" --arg target "$tag_commit" \
+            '{tag_name: $tag, target_commitish: $target}' > "$request_file"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --input "$request_file" > "$notes_file"
+          jq -e '.body | type == "string" and length > 0' "$notes_file" > /dev/null
+          jq -r '.body' "$notes_file" > "$generated_body_file"
+
+          start_marker='<!-- generated-release-notes:start -->'
+          end_marker='<!-- generated-release-notes:end -->'
+          if grep -Fq "$start_marker" "$generated_body_file" || grep -Fq "$end_marker" "$generated_body_file"; then
+            echo "Generated notes contain reserved release-message markers" >&2
+            exit 1
+          fi
+
+          jq --arg start "$start_marker" --arg end "$end_marker" --rawfile generated "$generated_body_file" '
+            (.body // "") as $body
+            | ($body | split($start)) as $start_parts
+            | ($body | split($end)) as $end_parts
+            | ($generated | sub("\\n+$"; "")) as $notes
+            | if (($start_parts | length) == 1 and ($end_parts | length) == 1) then
+                {body: ($body
+                  + (if $body == "" then "" elif ($body | endswith("\n")) then "\n" else "\n\n" end)
+                  + $start + "\n" + $notes + "\n" + $end)}
+              elif (($start_parts | length) == 2 and ($end_parts | length) == 2
+                    and (($body | index($start)) < ($body | index($end)))) then
+                {body: ($start_parts[0] + $start + "\n" + $notes + "\n" + $end + $end_parts[1])}
+              else
+                error("release message contains an invalid generated-notes marker layout")
+              end
+          ' "$release_file" > "$patch_file"
+
+          jq -S '{body}' "$release_file" > "${RUNNER_TEMP}/release-body-before.json"
+          jq -S . "$patch_file" > "${RUNNER_TEMP}/release-body-desired.json"
+          if cmp -s "${RUNNER_TEMP}/release-body-before.json" "${RUNNER_TEMP}/release-body-desired.json"; then
+            echo "Release message for ${RELEASE_TAG} is already current" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          release_id="$(jq -r '.id' "$release_file")"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --input "$patch_file" > /dev/null
+
+          after_file="${RUNNER_TEMP}/release-after.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" > "$after_file"
+          jq -S '{
+            tag_name, name, draft, prerelease, target_commitish,
+            assets: ([.assets[] | {id, name, size, label, content_type, digest}] | sort_by(.id))
+          }' "$after_file" > "${RUNNER_TEMP}/release-immutable-after.json"
+          cmp "${RUNNER_TEMP}/release-immutable-before.json" "${RUNNER_TEMP}/release-immutable-after.json"
+          echo "Updated release message for ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"

@@ -8,7 +8,7 @@
 
 Xaero Map Sync is a shared map and waypoint synchronization mod for Minecraft Java Edition 1.17.1 Fabric servers. Clients upload map tiles that Xaero has already rendered; the server validates, merges, persists, and distributes them. Players continue to view maps and manage waypoints through the native Xaero World Map and Xaero Minimap interfaces.
 
-The current release is `3.0.0-alpha.6`, with network protocol `v11` and map storage format `v6`.
+The current release is `3.0.0-alpha.7`, with network protocol `v11` and map storage format `v6`.
 
 ## Compatibility
 
@@ -165,7 +165,7 @@ Linux/macOS:
 ./gradlew clean build
 ```
 
-Artifacts are written to `build/libs/`. The current suite contains 283 JUnit tests covering protocol payloads, transfer assembly, compression, Merkle trees, patches, tile storage, client coordination, server scheduling, permissions, activity state, dirty queues, and Xaero reflection adapters. See [`docs/xaero-compatibility.md`](docs/xaero-compatibility.md) for the supported version matrix.
+Artifacts are written to `build/libs/`. The current suite contains 291 JUnit tests covering protocol payloads, transfer assembly, compression, Merkle trees, patches, tile storage, client coordination, server scheduling, permissions, activity state, dirty queues, and Xaero reflection adapters. See [`docs/xaero-compatibility.md`](docs/xaero-compatibility.md) for the supported version matrix.
 
 The local end-to-end harness starts one server and two isolated clients:
 
@@ -193,6 +193,7 @@ CI uses JDK 21 to validate the Gradle Wrapper, download and SHA-256-check repres
 ## Related documentation
 
 - [`docs/atomic-map-sync-v6.md`](docs/atomic-map-sync-v6.md): protocol v11 / map format v6 lifecycle, observability, release, and rollback.
+- [`docs/release-process.md`](docs/release-process.md): mandatory `feature/*` to `master` to `release` promotion and tagging rules.
 - [`docs/xaero-compatibility.md`](docs/xaero-compatibility.md): supported Xaero Fabric releases and binary signature strategy.
 - [`docs/local-integration-test.md`](docs/local-integration-test.md): three-process local integration and manual acceptance checklist.
 - [`docs/pr-description.md`](docs/pr-description.md): pull request description for native client tile publication.

@@ -8,7 +8,7 @@
 
 Xaero Map Sync 是面向 Minecraft Java Edition 1.17.1 Fabric 服务器的共享地图与路径点同步 Mod。客户端把 Xaero 已经渲染完成的地图 tile 上传到服务器，服务器负责校验、合并、持久化和分发；玩家仍然通过 Xaero World Map 与 Xaero Minimap 的原生界面查看地图和管理路径点。
 
-当前版本为 `3.0.0-alpha.6`，网络协议为 `v11`，地图存储格式为 `v6`。
+当前版本为 `3.0.0-alpha.7`，网络协议为 `v11`，地图存储格式为 `v6`。
 
 ## 兼容性
 
@@ -165,7 +165,7 @@ Linux/macOS：
 ./gradlew clean build
 ```
 
-构建产物位于 `build/libs/`。当前测试套件包含 283 个 JUnit 测试，覆盖协议载荷、传输重组、压缩、Merkle、patch、tile 存储、客户端协调、服务端调度、权限、活动状态、dirty 队列和 Xaero 反射适配。完整版本矩阵见 [`docs/xaero-compatibility.md`](docs/xaero-compatibility.md)。
+构建产物位于 `build/libs/`。当前测试套件包含 291 个 JUnit 测试，覆盖协议载荷、传输重组、压缩、Merkle、patch、tile 存储、客户端协调、服务端调度、权限、活动状态、dirty 队列和 Xaero 反射适配。完整版本矩阵见 [`docs/xaero-compatibility.md`](docs/xaero-compatibility.md)。
 
 本地端到端联调使用一个服务端和两个隔离客户端：
 
@@ -193,6 +193,7 @@ CI 会使用 JDK 21 校验 Gradle Wrapper、下载并校验代表性 Xaero Fabri
 ## 相关文档
 
 - [`docs/atomic-map-sync-v6.md`](docs/atomic-map-sync-v6.md)：协议 v11 / 地图格式 v6 的同步生命周期、可观测性、发布和回滚。
+- [`docs/release-process.md`](docs/release-process.md)：强制执行 `feature/*` 到 `master` 再到 `release` 的晋级与 tag 规则。
 - [`docs/xaero-compatibility.md`](docs/xaero-compatibility.md)：受支持的 Xaero Fabric 版本与二进制签名策略。
 - [`docs/local-integration-test.md`](docs/local-integration-test.md)：三进程本地联调和人工验收清单。
 - [`docs/pr-description.md`](docs/pr-description.md)：当前地图 tile 发布变更的 PR 描述。

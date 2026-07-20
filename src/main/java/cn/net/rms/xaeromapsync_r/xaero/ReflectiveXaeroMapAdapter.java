@@ -447,7 +447,8 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			getMapRegion = method(mapProcessorClass, mapRegionClass, "getMapRegion", int.class, int.class, boolean.class);
 			getTilePool = method(mapProcessorClass, mapTilePoolClass, "getTilePool");
 			getBlockStateShortShapeCache = blockStateShortShapeCacheClass == null ? null
-					: method(mapProcessorClass, blockStateShortShapeCacheClass, "getBlockStateShortShapeCache");
+					: optionalMethod(mapProcessorClass, blockStateShortShapeCacheClass,
+							"getBlockStateShortShapeCache");
 			getMapSaveLoad = method(mapProcessorClass, mapSaveLoadClass, "getMapSaveLoad");
 			Method twoDimensionalMapTile = optionalMethod(mapProcessorClass, xaeroMapTileClass, "getMapTile",
 					int.class, int.class);
@@ -486,10 +487,18 @@ public final class ReflectiveXaeroMapAdapter implements XaeroMapAdapter {
 			getChunkLoadState = method(mapTileChunkClass, int.class, "getLoadState");
 			setChunkLoadState = method(mapTileChunkClass, "setLoadState", byte.class);
 			getTile = method(mapTileChunkClass, xaeroMapTileClass, "getTile", int.class, int.class);
-			setTile = blockStateShortShapeCacheClass == null
-					? method(mapTileChunkClass, "setTile", int.class, int.class, xaeroMapTileClass)
-					: method(mapTileChunkClass, "setTile", int.class, int.class, xaeroMapTileClass,
-							blockStateShortShapeCacheClass);
+			Method legacySetTile = optionalMethod(mapTileChunkClass, "setTile", int.class, int.class,
+					xaeroMapTileClass);
+			if (legacySetTile != null) {
+				setTile = legacySetTile;
+			} else {
+				if (blockStateShortShapeCacheClass == null || getBlockStateShortShapeCache == null) {
+					throw new NoSuchMethodException("Xaero cached MapTileChunk.setTile requires "
+							+ "MapProcessor.getBlockStateShortShapeCache");
+				}
+				setTile = method(mapTileChunkClass, "setTile", int.class, int.class, xaeroMapTileClass,
+						blockStateShortShapeCacheClass);
+			}
 			wasChanged = method(mapTileChunkClass, "wasChanged");
 			setChanged = method(mapTileChunkClass, "setChanged", boolean.class);
 			setHasHadTerrain = optionalMethod(mapTileChunkClass, void.class, "setHasHadTerrain");

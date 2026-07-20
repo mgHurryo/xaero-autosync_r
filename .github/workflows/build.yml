@@ -16,6 +16,17 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      - name: Verify release pull request source
+        if: github.event_name == 'pull_request' && github.base_ref == 'release'
+        env:
+          RELEASE_SOURCE_BRANCH: ${{ github.head_ref }}
+          RELEASE_SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$RELEASE_SOURCE_BRANCH" != "master" ] || [ "$RELEASE_SOURCE_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
+            echo "release only accepts pull requests from this repository's master branch" >&2
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v6
 
@@ -43,11 +54,13 @@ jobs:
             prefix="${file_id%???}"
             suffix="${file_id: -3}"
             curl --fail --location --show-error --silent --retry 3 --retry-delay 5 \
+              --connect-timeout 15 --max-time 120 \
               --output "xaeromap-origin/${file_name}" \
               "https://edge.forgecdn.net/files/${prefix}/${suffix}/${file_name}"
           }
           download_fixture 3379205 XaerosWorldMap_1.14.5.2_Fabric_1.17.1.jar
           download_fixture 3443619 XaerosWorldMap_1.17.0_Fabric_1.17.1.jar
+          download_fixture 3491646 XaerosWorldMap_1.17.3_Fabric_1.17.1.jar
           download_fixture 3502018 XaerosWorldMap_1.18.0_Fabric_1.17.1.jar
           download_fixture 3512813 XaerosWorldMap_1.18.1_Fabric_1.17.1.jar
           download_fixture 3613294 XaerosWorldMap_1.20.0_Fabric_1.17.1.jar
@@ -63,6 +76,7 @@ jobs:
           {
             echo "4ebbb2b35b93b003a46e7253e4e97eeb03f7b2062594ee93ea697abe2db65d13  xaeromap-origin/XaerosWorldMap_1.14.5.2_Fabric_1.17.1.jar"
             echo "05fbce96fb0a67935f40cccd5c3bba637c4862b08c9c6ef8bea5cb93501afdd9  xaeromap-origin/XaerosWorldMap_1.17.0_Fabric_1.17.1.jar"
+            echo "785b407fcc3f2c6e499ed238bf186a1b1edc663bd034c7645c37170e3ffe6462  xaeromap-origin/XaerosWorldMap_1.17.3_Fabric_1.17.1.jar"
             echo "0817b795d89b4dcad8e9fb3d96ebd671434ff15457771639866270b576922844  xaeromap-origin/XaerosWorldMap_1.18.0_Fabric_1.17.1.jar"
             echo "903fa3e0c19b1da64c49ce6bd97ab18086e0db95d0fc005e914f61409ca9f2fa  xaeromap-origin/XaerosWorldMap_1.18.1_Fabric_1.17.1.jar"
             echo "7c86cc17005edd2a4b6e14bbced810e612e0d5cb2c7993440c453b2bffe208a6  xaeromap-origin/XaerosWorldMap_1.20.0_Fabric_1.17.1.jar"

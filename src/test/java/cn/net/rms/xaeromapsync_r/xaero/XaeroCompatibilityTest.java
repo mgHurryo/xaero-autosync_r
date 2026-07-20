@@ -16,7 +16,7 @@ import net.fabricmc.loader.api.metadata.version.VersionPredicate;
 import org.junit.jupiter.api.Test;
 
 final class XaeroCompatibilityTest {
-	private static final List<String> WORLD_MAP_RELEASES = List.of(
+	static final List<String> WORLD_MAP_RELEASES = List.of(
 			"1.14.5.2", "1.14.6.1", "1.15.0.1", "1.16.0", "1.16.1", "1.17.0", "1.17.1", "1.17.2",
 			"1.17.3", "1.18.0", "1.18.1", "1.18.2", "1.18.3", "1.18.4", "1.18.6", "1.18.7", "1.18.8",
 			"1.19.0", "1.19.1", "1.20.0", "1.20.1", "1.20.3.1", "1.20.4.1", "1.20.5", "1.20.6", "1.20.7",
@@ -26,7 +26,7 @@ final class XaeroCompatibilityTest {
 			"1.29.4", "1.29.5", "1.30.0", "1.30.1", "1.30.2", "1.30.3", "1.30.5", "1.31.0", "1.32.0",
 			"1.33.0", "1.33.1", "1.34.0", "1.34.1", "1.35.0", "1.36.0", "1.37.0", "1.37.1", "1.37.3",
 			"1.37.4", "1.37.7", "1.37.8");
-	private static final List<String> MINIMAP_RELEASES = List.of(
+	static final List<String> MINIMAP_RELEASES = List.of(
 			"21.12.5.1", "21.13.0", "21.14.0", "21.14.1", "21.15.0.1", "21.15.1", "21.16.0", "21.17.0.1",
 			"21.17.1", "21.17.2", "21.18.0", "21.19.0", "21.20.0", "21.21.0", "21.22.0", "21.22.1",
 			"21.22.2", "21.22.3", "21.22.5", "21.22.6", "21.23.0", "21.23.1", "22.1.0", "22.1.1", "22.1.2",
